@@ -1,0 +1,10 @@
+[workspace]
+resolver = "2"
+members = [
+    "barcode-proto",
+    "receiver",
+]
+
+exclude = ["android/rust"]
+
+# android/rust is built separately via cargo-ndk, but shares barcode-proto

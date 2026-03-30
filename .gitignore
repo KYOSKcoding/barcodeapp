@@ -1,0 +1,22 @@
+# Rust
+target/
+**/*.rs.bk
+
+# Android
+android/app/build/
+android/build/
+android/.gradle/
+android/app/src/main/jniLibs/
+android/local.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log

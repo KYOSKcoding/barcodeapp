@@ -1,0 +1,190 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Build Android APK ───────────────────────────────────────────────
+  build-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: android/rust
+          cache-targets: true
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: sdkmanager "ndk;28.0.12674087"
+
+      - name: Build native library
+        working-directory: android
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_HOME }}/ndk/28.0.12674087
+        run: |
+          cargo ndk -t arm64-v8a -P 26 --link-libcxx-shared \
+            -o app/src/main/jniLibs \
+            build --manifest-path rust/Cargo.toml --release
+
+          # Clean extra dependency .so files
+          find app/src/main/jniLibs -name '*.so' \
+            ! -name 'libbarcode_scanner_android.so' \
+            ! -name 'libc++_shared.so' -delete
+
+          # Strip
+          $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip \
+            app/src/main/jniLibs/arm64-v8a/libbarcode_scanner_android.so
+
+      - name: Build APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: barcode-scanner.apk
+          path: android/app/build/outputs/apk/release/app-release.apk
+
+  # ── Build Dioxus Linux AppImage ─────────────────────────────────────
+  build-linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev \
+            librsvg2-dev libxdo-dev libfuse2 \
+            file desktop-file-utils
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build receiver (release)
+        run: cargo build -p receiver --release
+
+      - name: Create AppDir
+        run: |
+          mkdir -p AppDir/usr/bin AppDir/usr/share/icons/hicolor/256x256/apps AppDir/usr/share/applications
+
+          cp target/release/receiver AppDir/usr/bin/barcode-receiver
+
+          # Desktop file
+          cat > AppDir/usr/share/applications/barcode-receiver.desktop << 'DESKTOP'
+          [Desktop Entry]
+          Name=Barcode Receiver
+          Exec=barcode-receiver
+          Icon=barcode-receiver
+          Type=Application
+          Categories=Utility;
+          DESKTOP
+
+          cp AppDir/usr/share/applications/barcode-receiver.desktop AppDir/barcode-receiver.desktop
+
+          # Generate a simple SVG icon
+          cat > AppDir/usr/share/icons/hicolor/256x256/apps/barcode-receiver.svg << 'SVG'
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+            <rect width="256" height="256" rx="32" fill="#1a1a2e"/>
+            <rect x="40" y="60" width="12" height="136" fill="#e94560"/>
+            <rect x="62" y="60" width="8" height="136" fill="#e0e0e0"/>
+            <rect x="78" y="60" width="16" height="136" fill="#e94560"/>
+            <rect x="102" y="60" width="6" height="136" fill="#e0e0e0"/>
+            <rect x="116" y="60" width="12" height="136" fill="#e94560"/>
+            <rect x="136" y="60" width="10" height="136" fill="#e0e0e0"/>
+            <rect x="154" y="60" width="8" height="136" fill="#e94560"/>
+            <rect x="170" y="60" width="14" height="136" fill="#e0e0e0"/>
+            <rect x="192" y="60" width="6" height="136" fill="#e94560"/>
+            <rect x="206" y="60" width="12" height="136" fill="#e0e0e0"/>
+          </svg>
+          SVG
+
+          cp AppDir/usr/share/icons/hicolor/256x256/apps/barcode-receiver.svg AppDir/barcode-receiver.svg
+
+          # AppRun
+          cat > AppDir/AppRun << 'APPRUN'
+          #!/bin/bash
+          HERE="$(dirname "$(readlink -f "$0")")"
+          exec "$HERE/usr/bin/barcode-receiver" "$@"
+          APPRUN
+          chmod +x AppDir/AppRun
+
+      - name: Download appimagetool
+        run: |
+          wget -q https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+
+      - name: Build AppImage
+        run: |
+          ARCH=x86_64 ./appimagetool-x86_64.AppImage --appimage-extract-and-run AppDir barcode-receiver-x86_64.AppImage
+
+      - name: Upload AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: barcode-receiver.AppImage
+          path: barcode-receiver-x86_64.AppImage
+
+  # ── Rolling release ─────────────────────────────────────────────────
+  release:
+    needs: [build-apk, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Prepare release files
+        run: |
+          mv barcode-scanner.apk/app-release.apk barcode-scanner.apk
+          mv barcode-receiver.AppImage/barcode-receiver-x86_64.AppImage barcode-receiver-x86_64.AppImage
+
+      - name: Create/update rolling release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest Build
+          body: |
+            Rolling release — automatically updated on every push to `main`.
+
+            **Barcode Scanner** (Android APK, arm64)
+            **Barcode Receiver** (Linux AppImage, x86_64)
+          draft: false
+          prerelease: false
+          make_latest: true
+          files: |
+            barcode-scanner.apk
+            barcode-receiver-x86_64.AppImage
