@@ -156,17 +156,8 @@ body {
 .status { font-size: 11px; color: #555; padding: 5px 20px; flex-shrink: 0; border-bottom: 1px solid #1a1a3a; }
 .empty-state { text-align: center; padding: 60px; color: #444; font-size: 14px; }
 
-/* Split layout */
-.main-split { display: flex; flex: 1; overflow: hidden; }
-.left-panel { flex: 1; min-width: 420px; overflow-y: auto; padding: 14px 18px; }
-.right-panel { flex: 1; display: flex; flex-direction: column; border-left: 2px solid #ff2d6b; min-width: 0; }
-.iframe-bar {
-    display: flex; align-items: center; gap: 6px;
-    padding: 6px 10px; background: #111128; border-bottom: 1px solid #333; flex-shrink: 0;
-}
-.iframe-bar span { font-size: 11px; color: #666; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.iframe-container { flex: 1; }
-.iframe-container iframe { width: 100%; height: 100%; border: none; background: #fff; }
+/* Main content */
+.content { flex: 1; overflow-y: auto; padding: 14px 18px; }
 
 /* Detail panel */
 .detail-panel {
@@ -235,7 +226,10 @@ struct AppState {
     selected_shop: Signal<Option<String>>,
     copy_feedback: Signal<Option<&'static str>>,
     show_hidden: Signal<bool>,
-    iframe_url: Signal<Option<String>>,
+    // TODO: restore once dioxus desktop supports iframe navigation to external URLs
+    // see: https://github.com/DioxusLabs/dioxus/issues/3086
+    // blocked by hardcoded with_navigation_handler in dioxus-desktop/src/webview.rs
+    // iframe_url: Signal<Option<String>>,
 }
 
 // ── App ──────────────────────────────────────────────────────────────
@@ -256,7 +250,6 @@ fn App() -> Element {
         selected_shop: use_signal(|| None),
         copy_feedback: use_signal(|| None),
         show_hidden: use_signal(|| false),
-        iframe_url: use_signal(|| None),
     };
     use_context_provider(|| state);
 
@@ -304,21 +297,15 @@ fn App() -> Element {
         }
     });
 
-    let has_iframe = (state.iframe_url).read().is_some();
     rsx! {
         style { {CSS} }
         Header {}
         div { class: "status", "{state.status_msg}" }
         QrOverlay {}
-        div { class: "main-split",
-            div { class: "left-panel",
-                DetailPanel {}
-                ImageViewer {}
-                ScanTable {}
-            }
-            if has_iframe {
-                IframePanel {}
-            }
+        div { class: "content",
+            DetailPanel {}
+            ImageViewer {}
+            ScanTable {}
         }
     }
 }
@@ -502,61 +489,18 @@ fn DetailPanel() -> Element {
                     onclick: move |_| {
                         if let Some(name) = state.selected_shop.read().as_deref()
                             && let Some(url) = shop_url(name)
-                        {
-                            state.iframe_url.set(Some(url.to_string()));
-                        }
-                    },
-                    "Open Here"
-                }
-                button { class: "btn btn-sm",
-                    disabled: state.selected_shop.read().is_none(),
-                    onclick: move |_| {
-                        if let Some(name) = state.selected_shop.read().as_deref()
-                            && let Some(url) = shop_url(name)
                             && let Err(e) = opener::open(url)
                         {
                             tracing::warn!("browser: {e}");
                         }
                     },
-                    "Open Browser"
+                    "Open in Browser"
                 }
                 if let Some(name) = state.selected_shop.read().as_deref() {
                     span { style: "font-size:10px;color:#444;",
                         { shop_url(name).unwrap_or("").to_string() }
                     }
                 }
-            }
-        }
-    }
-}
-
-// ── Iframe panel ─────────────────────────────────────────────────────
-
-#[component]
-fn IframePanel() -> Element {
-    let mut state = use_context::<AppState>();
-    let url = match state.iframe_url.read().clone() {
-        Some(u) => u,
-        None => return rsx! {},
-    };
-    rsx! {
-        div { class: "right-panel",
-            div { class: "iframe-bar",
-                span { "{url}" }
-                button { class: "btn btn-sm",
-                    onclick: move |_| {
-                        if let Some(u) = state.iframe_url.read().as_deref()
-                            && let Err(e) = opener::open(u)
-                        {
-                            tracing::warn!("browser: {e}");
-                        }
-                    },
-                    "Browser"
-                }
-                button { class: "btn btn-sm", onclick: move |_| state.iframe_url.set(None), "X" }
-            }
-            div { class: "iframe-container",
-                iframe { src: "{url}" }
             }
         }
     }
