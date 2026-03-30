@@ -12,8 +12,28 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # ── Create/update rolling release tag first ─────────────────────────
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create or update rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Delete existing release (if any) so we can recreate fresh
+          gh release delete latest --yes 2>/dev/null || true
+          git tag -f latest
+          git push origin latest --force
+          gh release create latest \
+            --title "Latest Build" \
+            --notes "Rolling release -- automatically updated on every push to \`main\`.\n\n**Barcode Scanner** (Android APK, arm64)\n**Barcode Receiver** (Linux AppImage, x86_64)\n\nAssets appear as each build completes." \
+            --latest
+
   # ── Build Android APK ───────────────────────────────────────────────
   build-apk:
+    needs: create-release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -53,12 +73,10 @@ jobs:
             -o app/src/main/jniLibs \
             build --manifest-path rust/Cargo.toml --release
 
-          # Clean extra dependency .so files
           find app/src/main/jniLibs -name '*.so' \
             ! -name 'libbarcode_scanner_android.so' \
             ! -name 'libc++_shared.so' -delete
 
-          # Strip
           $ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip \
             app/src/main/jniLibs/arm64-v8a/libbarcode_scanner_android.so
 
@@ -68,14 +86,16 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease
 
-      - name: Upload APK artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: barcode-scanner.apk
-          path: android/app/build/outputs/apk/release/app-release.apk
+      - name: Upload APK to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk barcode-scanner.apk
+          gh release upload latest barcode-scanner.apk --clobber
 
   # ── Build Dioxus Linux AppImage ─────────────────────────────────────
   build-linux:
+    needs: create-release
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@v4
@@ -103,7 +123,6 @@ jobs:
 
           cp target/release/receiver AppDir/usr/bin/barcode-receiver
 
-          # Desktop file
           cat > AppDir/usr/share/applications/barcode-receiver.desktop << 'DESKTOP'
           [Desktop Entry]
           Name=Barcode Receiver
@@ -115,26 +134,24 @@ jobs:
 
           cp AppDir/usr/share/applications/barcode-receiver.desktop AppDir/barcode-receiver.desktop
 
-          # Generate a simple SVG icon
           cat > AppDir/usr/share/icons/hicolor/256x256/apps/barcode-receiver.svg << 'SVG'
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
-            <rect width="256" height="256" rx="32" fill="#1a1a2e"/>
-            <rect x="40" y="60" width="12" height="136" fill="#e94560"/>
-            <rect x="62" y="60" width="8" height="136" fill="#e0e0e0"/>
-            <rect x="78" y="60" width="16" height="136" fill="#e94560"/>
-            <rect x="102" y="60" width="6" height="136" fill="#e0e0e0"/>
-            <rect x="116" y="60" width="12" height="136" fill="#e94560"/>
-            <rect x="136" y="60" width="10" height="136" fill="#e0e0e0"/>
-            <rect x="154" y="60" width="8" height="136" fill="#e94560"/>
-            <rect x="170" y="60" width="14" height="136" fill="#e0e0e0"/>
-            <rect x="192" y="60" width="6" height="136" fill="#e94560"/>
-            <rect x="206" y="60" width="12" height="136" fill="#e0e0e0"/>
+            <rect width="256" height="256" fill="#0c0c1d"/>
+            <rect x="40" y="60" width="12" height="136" fill="#ff2d6b"/>
+            <rect x="62" y="60" width="8" height="136" fill="#d0d0d0"/>
+            <rect x="78" y="60" width="16" height="136" fill="#ff2d6b"/>
+            <rect x="102" y="60" width="6" height="136" fill="#d0d0d0"/>
+            <rect x="116" y="60" width="12" height="136" fill="#ff2d6b"/>
+            <rect x="136" y="60" width="10" height="136" fill="#d0d0d0"/>
+            <rect x="154" y="60" width="8" height="136" fill="#ff2d6b"/>
+            <rect x="170" y="60" width="14" height="136" fill="#d0d0d0"/>
+            <rect x="192" y="60" width="6" height="136" fill="#ff2d6b"/>
+            <rect x="206" y="60" width="12" height="136" fill="#d0d0d0"/>
           </svg>
           SVG
 
           cp AppDir/usr/share/icons/hicolor/256x256/apps/barcode-receiver.svg AppDir/barcode-receiver.svg
 
-          # AppRun
           cat > AppDir/AppRun << 'APPRUN'
           #!/bin/bash
           HERE="$(dirname "$(readlink -f "$0")")"
@@ -151,40 +168,7 @@ jobs:
         run: |
           ARCH=x86_64 ./appimagetool-x86_64.AppImage --appimage-extract-and-run AppDir barcode-receiver-x86_64.AppImage
 
-      - name: Upload AppImage artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: barcode-receiver.AppImage
-          path: barcode-receiver-x86_64.AppImage
-
-  # ── Rolling release ─────────────────────────────────────────────────
-  release:
-    needs: [build-apk, build-linux]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-
-      - name: Prepare release files
-        run: |
-          mv barcode-scanner.apk/app-release.apk barcode-scanner.apk
-          mv barcode-receiver.AppImage/barcode-receiver-x86_64.AppImage barcode-receiver-x86_64.AppImage
-
-      - name: Create/update rolling release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: latest
-          name: Latest Build
-          body: |
-            Rolling release — automatically updated on every push to `main`.
-
-            **Barcode Scanner** (Android APK, arm64)
-            **Barcode Receiver** (Linux AppImage, x86_64)
-          draft: false
-          prerelease: false
-          make_latest: true
-          files: |
-            barcode-scanner.apk
-            barcode-receiver-x86_64.AppImage
+      - name: Upload AppImage to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload latest barcode-receiver-x86_64.AppImage --clobber

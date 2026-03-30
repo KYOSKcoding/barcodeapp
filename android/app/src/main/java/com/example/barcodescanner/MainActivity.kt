@@ -38,6 +38,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var codeText: TextView
     private lateinit var actionButton: Button
+    private lateinit var disconnectButton: Button
 
     // Launcher for scanning the EndpointTicket QR code
     private val ticketScanLauncher = registerForActivityResult(ScanContract()) { result ->
@@ -56,8 +57,10 @@ class MainActivity : AppCompatActivity() {
         statusText = findViewById(R.id.status_text)
         codeText = findViewById(R.id.code_text)
         actionButton = findViewById(R.id.action_button)
+        disconnectButton = findViewById(R.id.disconnect_button)
 
         actionButton.setOnClickListener { onActionButtonClicked() }
+        disconnectButton.setOnClickListener { onDisconnect() }
 
         updateUI()
     }
@@ -244,7 +247,27 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun onDisconnect() {
+        val handle = sessionHandle
+        if (handle != 0L) {
+            sessionHandle = 0L
+            lifecycleScope.launch(Dispatchers.IO) {
+                IrohBridge.disconnect(handle)
+            }
+        }
+        lastScannedCode = null
+        lastScannedFormat = null
+        lastScannedImageJpeg = null
+        state = State.IDLE
+        Log.i(TAG, "Disconnected")
+        updateUI()
+    }
+
     private fun updateUI() {
+        // Show disconnect button when connected
+        val connected = state in listOf(State.READY, State.SCANNING_CODE, State.SCANNED, State.SENDING)
+        disconnectButton.visibility = if (connected) android.view.View.VISIBLE else android.view.View.GONE
+
         when (state) {
             State.IDLE -> {
                 statusText.text = "Ready to connect"
