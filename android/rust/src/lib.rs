@@ -197,6 +197,7 @@ pub extern "system" fn Java_com_example_barcodescanner_IrohBridge_sendScan(
         kind: code_kind,
         code: code_str,
         image_jpeg: image_bytes,
+        extracted_card: None,  // Android just decodes; extraction happens in barcode-proto
     };
 
     info!("sending scan: {} '{}'", scan.kind.as_str(), scan.code);
