@@ -91,7 +91,7 @@ fn format_display_code(code: &str) -> String {
 struct ScanEntry {
     kind: String,
     code: String,
-    display_code: String,  // Trimmed/formatted for display
+    extracted_card: Option<String>,  // Card number extracted and validated by barcode-proto
     image_b64: String,
     timestamp: String,
     detected_shops: Vec<&'static str>,
@@ -577,7 +577,7 @@ fn ScanTable() -> Element {
         table {
             thead { tr {
                 th { class: "check-col", "" }
-                th { "#" } th { "Kind" } th { "Code" } th { "Shop" } th { "Img" } th { "Time" }
+                th { "#" } th { "Kind" } th { "Code" } th { "Extracted" } th { "Shop" } th { "Img" } th { "Time" }
             }}
             tbody {
                 for (i, entry) in entries.into_iter().rev() {
@@ -632,6 +632,19 @@ fn render_scan_row(mut state: AppState, i: usize, entry: &ScanEntry) -> Element 
             td { "{entry.kind}" }
             td { style: "font-family:inherit;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;",
                 "{entry.display_code}"
+            }
+            td { style: "font-family:monospace;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;",
+                if let Some(extracted) = entry.extracted_card.clone() {
+                    span { style: "color:green;font-weight:bold;cursor:pointer;",
+                        onclick: move |e| {
+                            e.stop_propagation();
+                            copy_to_clipboard(&extracted);
+                        },
+                        "{extracted} 📋"
+                    }
+                } else {
+                    span { style: "color:#999;", "--" }
+                }
             }
             td { "{shop_str}" }
             td {
@@ -722,14 +735,15 @@ async fn run_iroh(tx: mpsc::UnboundedSender<IrohEvent>) -> anyhow::Result<()> {
                         let display_code = format_display_code(&result.code);
                         let entry = ScanEntry {
                             kind: result.kind.as_str().to_string(),
-                            code: result.code,
-                            display_code,
+                            code: result.code.clone(),
+                            extracted_card: result.extracted_card,
                             image_b64,
                             timestamp: format_timestamp(),
                             detected_shops,
                             hidden: false,
                         };
-                        info!("Scan: {} - {}", entry.kind, entry.code);
+                        let display_code = entry.extracted_card.as_ref().unwrap_or(&entry.code);
+                        info!("Scan: {} - {} (extracted: {})", entry.kind, entry.code, display_code);
                         let _ = tx.send(IrohEvent::Scan(entry));
                     }
                     Err(e) => {

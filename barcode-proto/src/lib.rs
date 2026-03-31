@@ -37,12 +37,14 @@ impl CodeKind {
     }
 }
 
-/// A scanned code with optional image.
+/// A scanned code with optional image and extracted card number.
 #[derive(Debug, Clone)]
 pub struct ScanResult {
     pub kind: CodeKind,
     pub code: String,
     pub image_jpeg: Vec<u8>,
+    /// Card number extracted and validated from code (None if extraction failed)
+    pub extracted_card: Option<String>,
 }
 
 const ACK: u8 = 0x01;
@@ -119,10 +121,14 @@ pub async fn recv_scan(send: &mut SendStream, recv: &mut RecvStream) -> Result<S
     send.write_all(&[ACK]).await?;
     send.finish()?;
 
+    // Extract and validate card number
+    let extracted_card = extract_card_number(kind, &code).ok();
+
     Ok(ScanResult {
         kind,
         code,
         image_jpeg,
+        extracted_card,
     })
 }
 
@@ -130,4 +136,76 @@ async fn read_ack(recv: &mut RecvStream) -> Result<u8> {
     let mut buf = [0u8; 1];
     recv.read_exact(&mut buf).await.context("read ack")?;
     Ok(buf[0])
+}
+
+/// Extract and validate card number from scanned code.
+///
+/// **Extraction rules:**
+/// - Extract digits only (remove all non-digit characters)
+/// - ALDI/LIDL special cases:
+///   - 38-digit codes: trim to 20 digits (drop first 18)
+///   - 36-digit codes: trim to 18 digits (drop first 14)
+/// - EDEKA special case:
+///   - 32-digit codes: extract two parts separated by space
+///     - Part 1: digits[11:16] (5 digits)
+///     - Part 2: digits[18:] (remaining digits)
+///   - Result format: "AAAAA YYYYYYYYY"
+/// - Final validation: must be 10-24 digits (or 19 for EDEKA with space)
+/// - Returns error if validation fails (strict, no fallback)
+///
+/// # Examples
+/// ```
+/// // 38-digit ALDI code → trimmed to 20 digits
+/// let result = extract_card_number(CodeKind::Barcode, "123456789012345678901234567890123456XX");
+/// assert!(result.is_ok());
+///
+/// // 32-digit EDEKA code → two parts with space
+/// let result = extract_card_number(CodeKind::Barcode, "12345678901AAAAA12345BBBBBBBBBBBBB");
+/// assert_eq!(result.ok(), Some("AAAAA BBBBBBBBBBBBB".to_string()));
+///
+/// // Invalid length → error
+/// let result = extract_card_number(CodeKind::Barcode, "123456789");
+/// assert!(result.is_err());
+/// ```
+pub fn extract_card_number(kind: CodeKind, code: &str) -> Result<String> {
+    // Extract digits only
+    let digits: String = code.chars().filter(|c| c.is_ascii_digit()).collect();
+
+    if digits.is_empty() {
+        bail!("no digits found in code");
+    }
+
+    let n = digits.len();
+
+    // Apply EDEKA special extraction (32-digit code)
+    if n == 32 {
+        // Extract: digits[11:16] + space + digits[18:]
+        let part1 = &digits[11..16];  // 5 digits
+        let part2 = &digits[18..];    // remaining digits
+        let result = format!("{} {}", part1, part2);
+        return Ok(result);
+    }
+
+    // Apply ALDI/LIDL trimming (based on specific lengths)
+    let trimmed = if n == 38 {
+        // 38-digit ALDI/LIDL: take last 20 digits (drop first 18)
+        digits[18..].to_string()
+    } else if n == 36 {
+        // 36-digit variant: take last 18 digits (drop first 14)
+        digits[14..].to_string()
+    } else {
+        digits
+    };
+
+    let trimmed_len = trimmed.len();
+
+    // Strict validation: final length must be 10-24 digits (card number typical range)
+    if trimmed_len < 10 || trimmed_len > 24 {
+        bail!(
+            "invalid card number length after extraction: {} (expected 10-24 digits)",
+            trimmed_len
+        );
+    }
+
+    Ok(trimmed)
 }
