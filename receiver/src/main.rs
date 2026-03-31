@@ -634,19 +634,15 @@ fn render_scan_row(mut state: AppState, i: usize, entry: &ScanEntry) -> Element 
             }
             td { style: "font-family:monospace;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;",
                 if let Some(extracted) = &entry.extracted_card {
-                    rsx! {
-                        span { style: "color:green;font-weight:bold;cursor:pointer;",
-                            onclick: move |e| {
-                                e.stop_propagation();
-                                copy_to_clipboard(extracted);
-                            },
-                            "{extracted} 📋"
-                        }
+                    span { style: "color:green;font-weight:bold;cursor:pointer;",
+                        onclick: move |e| {
+                            e.stop_propagation();
+                            copy_to_clipboard(extracted);
+                        },
+                        "{extracted} 📋"
                     }
                 } else {
-                    rsx! {
-                        span { style: "color:#999;", "--" }
-                    }
+                    span { style: "color:#999;", "--" }
                 }
             }
             td { "{shop_str}" }
