@@ -57,6 +57,34 @@ fn shop_url(name: &str) -> Option<&'static str> {
     SHOPS.iter().find(|s| s.name == name).map(|s| s.url)
 }
 
+/// Trim/format code for display before showing in UI
+/// - EDEKA (32 digits): Extract parts[11:16] + space + parts[18:]
+/// - ALDI/LIDL (38 digits): Drop first 18, keep 20
+/// - ALDI/LIDL (36 digits): Drop first 14, keep 18
+/// - Others: Keep as-is
+fn format_display_code(code: &str) -> String {
+    let digits: String = code.chars().filter(|c| c.is_ascii_digit()).collect();
+    let n = digits.len();
+
+    match n {
+        32 => {
+            // EDEKA: extract two parts with space separator
+            let part1 = &digits[11..16];
+            let part2 = &digits[18..];
+            format!("{} {}", part1, part2)
+        }
+        38 => {
+            // ALDI/LIDL 38 digits: trim to 20 (drop first 18)
+            digits[18..].to_string()
+        }
+        36 => {
+            // ALDI/LIDL 36 digits: trim to 18 (drop first 14)
+            digits[14..].to_string()
+        }
+        _ => code.to_string(), // Keep others as-is
+    }
+}
+
 // ── Data types ───────────────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -223,7 +251,6 @@ struct AppState {
     image_rotation: Signal<i32>,
     status_msg: Signal<String>,
     selected_scan: Signal<Option<usize>>,
-    pin_input: Signal<String>,
     selected_shop: Signal<Option<String>>,
     copy_feedback: Signal<Option<&'static str>>,
     show_hidden: Signal<bool>,
@@ -247,7 +274,6 @@ fn App() -> Element {
         image_rotation: use_signal(|| 0),
         status_msg: use_signal(|| "Starting...".to_string()),
         selected_scan: use_signal(|| None),
-        pin_input: use_signal(String::new),
         selected_shop: use_signal(|| None),
         copy_feedback: use_signal(|| None),
         show_hidden: use_signal(|| false),
@@ -287,7 +313,6 @@ fn App() -> Element {
                     let detected = entry.detected_shops.clone();
                     state.scans.write().push(entry);
                     state.selected_scan.set(Some(idx));
-                    state.pin_input.set(String::new());
                     if detected.len() == 1 {
                         state.selected_shop.set(Some(detected[0].to_string()));
                     } else {
@@ -398,7 +423,6 @@ fn DetailPanel() -> Element {
     let detected = entry.detected_shops.clone();
     let kind = entry.kind.clone();
     let code_for_copy = code_val.clone();
-    let pin_for_copy = state.pin_input.read().clone();
     let det_label = if detected.len() == 1 {
         format!(">> {}", detected[0])
     } else if detected.len() > 1 {
@@ -428,28 +452,6 @@ fn DetailPanel() -> Element {
                             tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
                             state.copy_feedback.set(None);
                         });
-                    },
-                    "Copy"
-                }
-            }
-            div { class: "detail-row",
-                label { "PIN:" }
-                input {
-                    r#type: "text", value: "{state.pin_input}", maxlength: "6",
-                    placeholder: "enter pin",
-                    oninput: move |e: Event<FormData>| state.pin_input.set(e.value()),
-                }
-                button { class: "btn btn-copy",
-                    onclick: move |_| {
-                        let p = pin_for_copy.clone();
-                        if !p.is_empty() {
-                            copy_to_clipboard(&p);
-                            state.copy_feedback.set(Some("PIN copied!"));
-                            spawn(async move {
-                                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                                state.copy_feedback.set(None);
-                            });
-                        }
                     },
                     "Copy"
                 }
@@ -609,7 +611,6 @@ fn render_scan_row(mut state: AppState, i: usize, entry: &ScanEntry) -> Element 
         tr { class: "{row_cls}", style: "cursor:pointer;",
             onclick: move |_| {
                 state.selected_scan.set(Some(i));
-                state.pin_input.set(String::new());
                 let shops = &state.scans.read()[i].detected_shops;
                 if shops.len() == 1 {
                     state.selected_shop.set(Some(shops[0].to_string()));
@@ -630,7 +631,7 @@ fn render_scan_row(mut state: AppState, i: usize, entry: &ScanEntry) -> Element 
             td { "{i + 1}" }
             td { "{entry.kind}" }
             td { style: "font-family:inherit;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;",
-                "{entry.code}"
+                "{entry.display_code}"
             }
             td { style: "font-family:monospace;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;",
                 if let Some(extracted) = entry.extracted_card.clone() {
@@ -731,6 +732,7 @@ async fn run_iroh(tx: mpsc::UnboundedSender<IrohEvent>) -> anyhow::Result<()> {
                             BASE64.encode(&result.image_jpeg)
                         };
                         let detected_shops = detect_shops(&result.code);
+                        let display_code = format_display_code(&result.code);
                         let entry = ScanEntry {
                             kind: result.kind.as_str().to_string(),
                             code: result.code.clone(),
