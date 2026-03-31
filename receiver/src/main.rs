@@ -633,11 +633,11 @@ fn render_scan_row(mut state: AppState, i: usize, entry: &ScanEntry) -> Element 
                 "{entry.code}"
             }
             td { style: "font-family:monospace;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;",
-                if let Some(extracted) = &entry.extracted_card {
+                if let Some(extracted) = entry.extracted_card.clone() {
                     span { style: "color:green;font-weight:bold;cursor:pointer;",
                         onclick: move |e| {
                             e.stop_propagation();
-                            copy_to_clipboard(extracted);
+                            copy_to_clipboard(&extracted);
                         },
                         "{extracted} 📋"
                     }
