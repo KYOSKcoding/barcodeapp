@@ -96,6 +96,7 @@ struct ScanEntry {
     timestamp: String,
     detected_shops: Vec<&'static str>,
     hidden: bool,
+    display_code: String,  // Formatted code for UI display (shop-specific formatting applied)
 }
 
 enum IrohEvent {
@@ -736,14 +737,15 @@ async fn run_iroh(tx: mpsc::UnboundedSender<IrohEvent>) -> anyhow::Result<()> {
                         let entry = ScanEntry {
                             kind: result.kind.as_str().to_string(),
                             code: result.code.clone(),
-                            extracted_card: result.extracted_card,
+                            extracted_card: result.extracted_card.clone(),
                             image_b64,
                             timestamp: format_timestamp(),
                             detected_shops,
                             hidden: false,
+                            display_code,
                         };
-                        let display_code = entry.extracted_card.as_ref().unwrap_or(&entry.code);
-                        info!("Scan: {} - {} (extracted: {})", entry.kind, entry.code, display_code);
+                        let log_display = entry.extracted_card.as_ref().unwrap_or(&entry.code);
+                        info!("Scan: {} - {} (extracted: {})", entry.kind, entry.code, log_display);
                         let _ = tx.send(IrohEvent::Scan(entry));
                     }
                     Err(e) => {
