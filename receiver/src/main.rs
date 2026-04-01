@@ -31,6 +31,11 @@ const SHOPS: &[ShopConfig] = &[
         digit_counts: &[24, 32],
     },
     ShopConfig {
+        name: "EDEKA",
+        url: "https://evci.pin-host.com/evci/#/saldo",
+        digit_counts: &[16],
+    },
+    ShopConfig {
         name: "ALDI",
         url: "https://www.helaba.com/de/aldi/",
         digit_counts: &[20, 36, 38],
@@ -57,31 +62,20 @@ fn shop_url(name: &str) -> Option<&'static str> {
     SHOPS.iter().find(|s| s.name == name).map(|s| s.url)
 }
 
-/// Trim/format code for display before showing in UI
-/// - EDEKA (32 digits): Extract parts[11:16] + space + parts[18:]
-/// - ALDI/LIDL (38 digits): Drop first 18, keep 20
-/// - ALDI/LIDL (36 digits): Drop first 14, keep 18
-/// - Others: Keep as-is
+/// Trim/format code for display in UI — mirrors extract_card_number rules.
+/// - REWE 39 digits: first 13
+/// - ALDI/LIDL 38 digits: drop first 18, keep 20
+/// - ALDI/LIDL 36 digits: drop first 18, keep 18
+/// - Others (incl. DM 32, REWE 13, EDEKA 16): keep as-is
 fn format_display_code(code: &str) -> String {
     let digits: String = code.chars().filter(|c| c.is_ascii_digit()).collect();
     let n = digits.len();
 
     match n {
-        32 => {
-            // EDEKA: extract two parts with space separator
-            let part1 = &digits[11..16];
-            let part2 = &digits[18..];
-            format!("{} {}", part1, part2)
-        }
-        38 => {
-            // ALDI/LIDL 38 digits: trim to 20 (drop first 18)
-            digits[18..].to_string()
-        }
-        36 => {
-            // ALDI/LIDL 36 digits: trim to 18 (drop first 14)
-            digits[14..].to_string()
-        }
-        _ => code.to_string(), // Keep others as-is
+        39 => digits[..13].to_string(),
+        38 => digits[18..].to_string(),
+        36 => digits[18..].to_string(),
+        _ => code.to_string(),
     }
 }
 
@@ -557,14 +551,6 @@ fn ImageViewer() -> Element {
 #[component]
 fn ScanTable() -> Element {
     let state = use_context::<AppState>();
-    if state.scans.read().is_empty() {
-        return rsx! {
-            div { class: "empty-state",
-                p { "No scans yet." }
-                p { style: "margin-top:6px;font-size:12px;", "Scan the QR code with the phone app to connect." }
-            }
-        };
-    }
     let show_hidden = (state.show_hidden)();
     let entries: Vec<(usize, ScanEntry)> = state
         .scans
@@ -574,11 +560,36 @@ fn ScanTable() -> Element {
         .filter(|(_, e)| show_hidden || !e.hidden)
         .map(|(i, e)| (i, e.clone()))
         .collect();
+
+    // Always render the table headers so layout is stable before the first scan.
+    // Use early-return for the empty state to avoid colspan type issues and
+    // if/else-inside-RSX fragility with the for loop.
+    if entries.is_empty() {
+        return rsx! {
+            table {
+                thead { tr {
+                    th { class: "check-col", "" }
+                    th { "#" } th { "Kind" } th { "Code" }
+                    th { "Extracted" } th { "Shop" } th { "Img" } th { "Time" }
+                }}
+                tbody {
+                    tr {
+                        td {
+                            style: "text-align:center;padding:40px;color:#444;font-size:13px;border-bottom:none;",
+                            "No scans yet — connect with the phone app to start."
+                        }
+                    }
+                }
+            }
+        };
+    }
+
     rsx! {
         table {
             thead { tr {
                 th { class: "check-col", "" }
-                th { "#" } th { "Kind" } th { "Code" } th { "Extracted" } th { "Shop" } th { "Img" } th { "Time" }
+                th { "#" } th { "Kind" } th { "Code" }
+                th { "Extracted" } th { "Shop" } th { "Img" } th { "Time" }
             }}
             tbody {
                 for (i, entry) in entries.into_iter().rev() {

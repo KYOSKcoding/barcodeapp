@@ -140,35 +140,14 @@ async fn read_ack(recv: &mut RecvStream) -> Result<u8> {
 
 /// Extract and validate card number from scanned code.
 ///
-/// **Extraction rules:**
-/// - Extract digits only (remove all non-digit characters)
-/// - ALDI/LIDL special cases:
-///   - 38-digit codes: trim to 20 digits (drop first 18)
-///   - 36-digit codes: trim to 18 digits (drop first 14)
-/// - EDEKA special case:
-///   - 32-digit codes: extract two parts separated by space
-///     - Part 1: digits[11:16] (5 digits)
-///     - Part 2: digits[18:] (remaining digits)
-///   - Result format: "AAAAA YYYYYYYYY"
-/// - Final validation: must be 10-24 digits (or 19 for EDEKA with space)
-/// - Returns error if validation fails (strict, no fallback)
-///
-/// # Examples
-/// ```
-/// // 38-digit ALDI code → trimmed to 20 digits
-/// let result = extract_card_number(CodeKind::Barcode, "123456789012345678901234567890123456XX");
-/// assert!(result.is_ok());
-///
-/// // 32-digit EDEKA code → two parts with space
-/// let result = extract_card_number(CodeKind::Barcode, "12345678901AAAAA12345BBBBBBBBBBBBB");
-/// assert_eq!(result.ok(), Some("AAAAA BBBBBBBBBBBBB".to_string()));
-///
-/// // Invalid length → error
-/// let result = extract_card_number(CodeKind::Barcode, "123456789");
-/// assert!(result.is_err());
-/// ```
-pub fn extract_card_number(kind: CodeKind, code: &str) -> Result<String> {
-    // Extract digits only
+/// Rules match the voucher-scanner.py reference implementation:
+/// - Digits only (non-digit chars stripped first)
+/// - REWE 39-digit barcode  → first 13 digits
+/// - ALDI/LIDL 38-digit     → drop first 18, keep last 20
+/// - ALDI/LIDL 36-digit     → drop first 18, keep last 18
+/// - All other 10–32-digit codes → kept as-is
+///   (covers REWE 13, DM 24/32, LIDL 18/20, ALDI 20, EDEKA 16)
+pub fn extract_card_number(_kind: CodeKind, code: &str) -> Result<String> {
     let digits: String = code.chars().filter(|c| c.is_ascii_digit()).collect();
 
     if digits.is_empty() {
@@ -177,35 +156,17 @@ pub fn extract_card_number(kind: CodeKind, code: &str) -> Result<String> {
 
     let n = digits.len();
 
-    // Apply EDEKA special extraction (32-digit code)
-    if n == 32 {
-        // Extract: digits[11:16] + space + digits[18:]
-        let part1 = &digits[11..16];  // 5 digits
-        let part2 = &digits[18..];    // remaining digits
-        let result = format!("{} {}", part1, part2);
-        return Ok(result);
-    }
-
-    // Apply ALDI/LIDL trimming (based on specific lengths)
-    let trimmed = if n == 38 {
-        // 38-digit ALDI/LIDL: take last 20 digits (drop first 18)
-        digits[18..].to_string()
-    } else if n == 36 {
-        // 36-digit variant: take last 18 digits (drop first 14)
-        digits[14..].to_string()
-    } else {
-        digits
+    let result = match n {
+        // REWE 39-digit barcode: card number is the first 13 digits
+        39 => digits[..13].to_string(),
+        // ALDI/LIDL 38-digit: drop prefix 18, keep last 20
+        38 => digits[18..].to_string(),
+        // ALDI/LIDL 36-digit: drop prefix 18, keep last 18
+        36 => digits[18..].to_string(),
+        // Standard range: REWE 13, DM 24/32, LIDL 18/20, ALDI 20, EDEKA 16 – keep as-is
+        10..=32 => digits,
+        _ => bail!("unrecognised digit count: {n}"),
     };
 
-    let trimmed_len = trimmed.len();
-
-    // Strict validation: final length must be 10-24 digits (card number typical range)
-    if trimmed_len < 10 || trimmed_len > 24 {
-        bail!(
-            "invalid card number length after extraction: {} (expected 10-24 digits)",
-            trimmed_len
-        );
-    }
-
-    Ok(trimmed)
+    Ok(result)
 }
