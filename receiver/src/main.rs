@@ -28,12 +28,12 @@ const SHOPS: &[ShopConfig] = &[
     ShopConfig {
         name: "DM",
         url: "https://www.dm.de/services/services-im-markt/geschenkkarten",
-        digit_counts: &[24, 32],
+        digit_counts: &[24],
     },
     ShopConfig {
         name: "EDEKA",
         url: "https://evci.pin-host.com/evci/#/saldo",
-        digit_counts: &[16],
+        digit_counts: &[32],
     },
     ShopConfig {
         name: "ALDI",
@@ -66,7 +66,8 @@ fn shop_url(name: &str) -> Option<&'static str> {
 /// - REWE 39 digits: first 13
 /// - ALDI/LIDL 38 digits: drop first 18, keep 20
 /// - ALDI/LIDL 36 digits: drop first 18, keep 18
-/// - Others (incl. DM 32, REWE 13, EDEKA 16): keep as-is
+/// - EDEKA 32
+/// - Others (incl. DM 24, REWE 13, EDEKA 32): keep as-is
 fn format_display_code(code: &str) -> String {
     let digits: String = code.chars().filter(|c| c.is_ascii_digit()).collect();
     let n = digits.len();
@@ -75,6 +76,7 @@ fn format_display_code(code: &str) -> String {
         39 => digits[..13].to_string(),
         38 => digits[18..].to_string(),
         36 => digits[18..].to_string(),
+        32 => format!("{} {}", &digits[11..16], &digits[18..]),
         _ => code.to_string(),
     }
 }
