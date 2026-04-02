@@ -4,7 +4,15 @@ Scan barcodes and QR codes on an Android phone, send them instantly to a Linux d
 
 ## Overview
 
-Two apps talk to each other over [iroh](https://iroh.computer/), a QUIC-based p2p library. The phone scans codes with its camera and transmits the code text plus a low-res image to the desktop. The desktop shows a QR code to pair, then displays incoming scans in a table with shop detection, copy buttons, and a browser shortcut for gift card balance checks. No server needed — the devices connect directly via relay or local network (mDNS).
+Two apps talk to each other over [iroh](https://iroh.computer/), a QUIC-based p2p library. The phone scans codes with its camera and transmits the code text plus a low-res image to the desktop. The desktop shows a QR code to pair, then displays incoming scans in a table with **automatic shop detection, card number extraction, copy buttons, and browser shortcuts for gift card balance checks**. No server needed — the devices connect directly via relay or local network (mDNS).
+
+### Smart Card Detection
+
+When a barcode or QR code is scanned, the app:
+1. **Detects the shop** from its digit count pattern (REWE, ALDI, LIDL, DM, EDEKA)
+2. **Extracts the gift card number** using shop-specific rules
+3. **Shows balance-check links** for the detected shop
+4. **Formats multi-part cards** (e.g., EDEKA/DM 32-digit codes → two numbers)
 
 ## Usage
 
@@ -49,11 +57,14 @@ You can also copy the APK to your phone via USB, a file sharing app, or by openi
 ### Desktop receiver
 
 ```sh
-cargo run -p receiver            # debug
-cargo build -p receiver --release  # release binary in target/release/receiver
-# or depending on your installation eg.:
-env -i HOME=$HOME PATH=$PATH   DISPLAY=$DISPLAY   WAYLAND_DISPLAY=$WAYLAND_DISPLAY   XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR   DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS   XAUTHORITY=$XAUTHORITY   target/debug/receiver
+cargo run -p receiver                 # debug
+cargo build -p receiver --release     # release binary in target/release/receiver
+```
 
+Or use the convenience script which handles environment setup:
+
+```sh
+./run-receiver.sh                     # builds and runs debug binary with proper env vars
 ```
 
 ### Android scanner
@@ -86,13 +97,26 @@ cargo make logcat                 # stream filtered logs only
 
 Defines the ALPN identifier (`barcodescan/0`), wire format, and async `send_scan` / `recv_scan` functions used by both sides. Each scanned code travels over a single bidirectional QUIC stream: the scanner sends kind (barcode/QR), code string, and JPEG image; the receiver replies with a one-byte ACK; both sides finish.
 
+The protocol also extracts and validates gift card numbers from scanned codes using shop-specific rules:
+- **REWE 39 digits**: first 13 digits  
+- **ALDI/LIDL 38 digits**: drop first 18, keep last 20  
+- **ALDI/LIDL 36 digits**: drop first 18, keep last 18  
+- **EDEKA/DM 32 digits**: two numbers (digits 11–16 and 18+)  
+- **All other 10–32 digit codes**: kept as-is (covers REWE 13, DM 24, LIDL 18/20, ALDI 20, EDEKA 16)
+
 ### `android/` — scanner app
 
-Kotlin activity with a state machine (idle, connecting, scanning, sending) and two zxing-embedded scan launchers — one for the connection ticket QR, one for barcodes. The iroh networking runs in Rust, accessed through four JNI functions: `connect`, `sendScan`, `isConnected`, `disconnect`. A disconnect button lets you return to the start screen and re-pair.
+Kotlin activity with a state machine (idle, connecting, scanning, sending) and two zxing-embedded scan launchers — one for the connection ticket QR, one for barcodes. Displays the raw scanned code, extracted card numbers, and detected shops. The iroh networking runs in Rust, accessed through JNI functions for `connect`, `sendScan`, `isConnected`, and `disconnect`. A disconnect button lets you return to the start screen and re-pair. Uses the same shop detection and card extraction rules as the desktop app.
 
 ### `receiver/` — desktop app
 
-Dioxus 0.7 desktop app. On launch it creates an iroh endpoint with N0 preset and mDNS, generates an `EndpointTicket`, and shows it as a QR code (compact ID-only by default, with a toggle for the full ticket including addresses). Incoming scans populate a table. The detail panel auto-detects the shop (REWE, DM, ALDI, LIDL) from digit count heuristics and offers copy-to-clipboard for card number and PIN, plus an "Open in Browser" button for the shop's balance-check page. An image viewer with rotation is available for scans that include a photo. A checkbox on each row hides processed entries; a header toggle reveals them again.
+Dioxus 0.7 desktop app. On launch it creates an iroh endpoint with N0 preset and mDNS, generates an `EndpointTicket`, and shows it as a QR code (compact ID-only by default, with a toggle for the full ticket including addresses). Incoming scans populate a table with shop detection and card extraction. The detail panel:
+- **Auto-detects shops** (REWE, DM, ALDI, LIDL, EDEKA) from barcode digit patterns
+- **Extracts and displays card numbers** with shop-specific formatting (e.g., two-column layout for 32-digit DM/EDEKA cards)
+- **Offers copy-to-clipboard** buttons for card numbers
+- **Opens browser balance-check pages** via "Open in Browser" buttons for each detected shop
+- **Shows scanned images** with rotation controls for codes that include a photo
+- **Hides/reveals processed entries** with per-row and header toggles
 
 ### Tech stack
 

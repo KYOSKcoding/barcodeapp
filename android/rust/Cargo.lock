@@ -167,7 +167,6 @@ dependencies = [
  "anyhow",
  "iroh",
  "tokio",
- "tracing",
 ]
 
 [[package]]

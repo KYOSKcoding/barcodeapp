@@ -202,13 +202,23 @@ pub extern "system" fn Java_com_example_barcodescanner_IrohBridge_sendScan(
 
     info!("sending scan: {} '{}'", scan.kind.as_str(), scan.code);
 
-    match runtime().block_on(barcode_proto::send_scan(&session.connection, &scan)) {
-        Ok(()) => {
+    match runtime().block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            barcode_proto::send_scan(&session.connection, &scan),
+        )
+        .await
+    }) {
+        Ok(Ok(())) => {
             info!("scan sent and ACKed");
             jni::sys::JNI_TRUE as jboolean
         }
-        Err(e) => {
+        Ok(Err(e)) => {
             tracing::error!("send_scan failed: {e:#}");
+            jni::sys::JNI_FALSE as jboolean
+        }
+        Err(_) => {
+            tracing::error!("send_scan timed out after 15s");
             jni::sys::JNI_FALSE as jboolean
         }
     }

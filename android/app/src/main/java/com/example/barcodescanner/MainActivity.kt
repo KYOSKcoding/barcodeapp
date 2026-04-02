@@ -19,6 +19,7 @@ import com.journeyapps.barcodescanner.ScanIntentResult
 import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayOutputStream
@@ -78,6 +79,7 @@ class MainActivity : AppCompatActivity() {
     private var lastDetectedShops: List<ShopInfo> = emptyList()
     private var lastRawDigits: String = ""
     private var sendJob: Job? = null
+    private var countdownJob: Job? = null
 
     private lateinit var statusText: TextView
     private lateinit var rawCodeText: TextView
@@ -87,6 +89,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var disconnectButton: Button
     private lateinit var copyButtonsContainer: LinearLayout
     private lateinit var shopLinksContainer: LinearLayout
+    private lateinit var jumpToScanButton: Button
+    private lateinit var disconnectActionButton: Button
+    private lateinit var cancelSendButton: Button
 
     // Launcher for scanning the EndpointTicket QR code
     private val ticketScanLauncher = registerForActivityResult(ScanContract()) { result ->
@@ -110,10 +115,16 @@ class MainActivity : AppCompatActivity() {
         disconnectButton = findViewById(R.id.disconnect_button)
         copyButtonsContainer = findViewById(R.id.copy_buttons_container)
         shopLinksContainer = findViewById(R.id.shop_links_container)
+        jumpToScanButton = findViewById(R.id.jump_to_scan_button)
+        disconnectActionButton = findViewById(R.id.disconnect_action_button)
+        cancelSendButton = findViewById(R.id.cancel_send_button)
 
         actionButton.setOnClickListener { onActionButtonClicked() }
         scanPhoneButton.setOnClickListener { onScanPhoneClicked() }
-        disconnectButton.setOnClickListener { onDisconnect() }
+        disconnectButton.setOnClickListener { onBack() }
+        disconnectActionButton.setOnClickListener { onDisconnect() }
+        jumpToScanButton.setOnClickListener { onJumpToScan() }
+        cancelSendButton.setOnClickListener { onBack() }
 
         updateUI()
     }
@@ -138,6 +149,11 @@ class MainActivity : AppCompatActivity() {
             setBarcodeImageEnabled(true)
         }
         codeScanLauncher.launch(options)
+    }
+
+    private fun onJumpToScan() {
+        state = State.READY
+        updateUI()
     }
 
     private fun onScanPhoneClicked() {
@@ -248,7 +264,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
-     * Extract the barcode image from the scan result as a low-res JPEG.
+     * Extract the barcode image from the scan result as a JPEG (max 1080px).
      * zxing-embedded stores the bitmap in the result intent when setBarcodeImageEnabled(true).
      */
     private fun extractBarcodeImage(result: ScanIntentResult): ByteArray? {
@@ -257,8 +273,8 @@ class MainActivity : AppCompatActivity() {
                 android.graphics.BitmapFactory.decodeFile(path)
             } ?: return null
 
-            // Scale down to max 320px on the long side for low-res transmission
-            val maxDim = 320
+            // Scale down to max 1080px on the long side
+            val maxDim = 1080
             val scale = maxDim.toFloat() / maxOf(bitmap.width, bitmap.height)
             val scaledBitmap = if (scale < 1.0f) {
                 Bitmap.createScaledBitmap(
@@ -272,7 +288,7 @@ class MainActivity : AppCompatActivity() {
             }
 
             val stream = ByteArrayOutputStream()
-            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 70, stream)
+            scaledBitmap.compress(Bitmap.CompressFormat.JPEG, 85, stream)
             val jpeg = stream.toByteArray()
 
             if (scaledBitmap !== bitmap) {
@@ -300,34 +316,66 @@ class MainActivity : AppCompatActivity() {
         state = State.SENDING
         updateUI()
 
+        val timeoutSecs = 15
+        countdownJob = lifecycleScope.launch(Dispatchers.Main) {
+            for (remaining in timeoutSecs downTo 1) {
+                statusText.text = "Sending... $remaining"
+                delay(1000)
+            }
+        }
+
         sendJob = lifecycleScope.launch(Dispatchers.IO) {
             try {
                 val success = IrohBridge.sendScan(handle, kind, code, imageJpeg)
                 withContext(Dispatchers.Main) {
+                    countdownJob?.cancel()
+                    countdownJob = null
                     if (state != State.SENDING) return@withContext
                     if (success) {
                         Log.i(TAG, "Scan sent successfully")
                         statusText.text = "Sent!"
+                        state = State.READY
                     } else {
-                        Log.e(TAG, "Failed to send scan")
-                        statusText.text = "Send failed"
+                        Log.e(TAG, "Failed to send scan (timeout or connection lost)")
+                        statusText.text = "Send failed — reconnect required"
+                        sessionHandle = 0L
+                        state = State.IDLE
                     }
-                    state = State.READY
                     updateUI()
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Send error", e)
                 withContext(Dispatchers.Main) {
+                    countdownJob?.cancel()
+                    countdownJob = null
                     if (state != State.SENDING) return@withContext
-                    statusText.text = "Send error: ${e.message}"
-                    state = State.READY
+                    statusText.text = "Send error — reconnect required"
+                    sessionHandle = 0L
+                    state = State.IDLE
                     updateUI()
                 }
             }
         }
     }
 
+    private fun onBack() {
+        countdownJob?.cancel(); countdownJob = null
+        sendJob?.cancel()
+        sendJob = null
+        lastScannedCode = null
+        lastScannedFormat = null
+        lastScannedImageJpeg = null
+        lastRawDigits = ""
+        lastTrimmedNumbers = emptyList()
+        lastDetectedShops = emptyList()
+        isLocalMode = false
+        state = State.IDLE
+        Log.i(TAG, "Back to home (session kept)")
+        updateUI()
+    }
+
     private fun onDisconnect() {
+        countdownJob?.cancel(); countdownJob = null
         sendJob?.cancel()
         sendJob = null
         val handle = sessionHandle
@@ -449,9 +497,16 @@ class MainActivity : AppCompatActivity() {
         // "Scan on phone" button only visible on idle screen
         scanPhoneButton.visibility = if (state == State.IDLE) android.view.View.VISIBLE else android.view.View.GONE
 
-        // Back button shown in READY, SCANNED, and SENDING (to abort)
-        val showBack = state == State.READY || state == State.SCANNED || state == State.SENDING
+        // "Jump to scanning" only visible on idle screen when already connected
+        jumpToScanButton.visibility = if (state == State.IDLE && sessionHandle != 0L) android.view.View.VISIBLE else android.view.View.GONE
+
+        // Cancel button only visible while sending
+        cancelSendButton.visibility = if (state == State.SENDING) android.view.View.VISIBLE else android.view.View.GONE
+
+        // Back button shown in READY and SCANNED (not SENDING — use Cancel instead)
+        val showBack = state == State.READY || state == State.SCANNED
         disconnectButton.visibility = if (showBack) android.view.View.VISIBLE else android.view.View.GONE
+        disconnectActionButton.visibility = if (showBack) android.view.View.VISIBLE else android.view.View.GONE
 
         // Raw code, copy buttons, and shop links only in SCANNED state
         rawCodeText.visibility = android.view.View.GONE

@@ -93,6 +93,8 @@ struct ScanEntry {
     detected_shops: Vec<&'static str>,
     hidden: bool,
     display_code: String,  // Formatted code for UI display (shop-specific formatting applied)
+    manual_count: String,  // user-editable count override (max 3 chars)
+    card_value: String,    // user-editable card value in €
 }
 
 enum IrohEvent {
@@ -225,7 +227,7 @@ tr.hidden-row { opacity: 0.4; }
 .check-col input[type="checkbox"] { cursor: pointer; accent-color: #ff2d6b; }
 
 /* Image viewer */
-.modal-image { max-width: 100%; max-height: 60vh; display: block; margin: 0 auto; transition: transform 0.15s; }
+.modal-image { max-width: 100%; max-height: 80vh; display: block; margin: 0 auto; transition: transform 0.15s; }
 .image-viewer {
     background: #111128; border: 1px solid #333; padding: 14px; margin-bottom: 14px; text-align: center;
 }
@@ -248,6 +250,7 @@ struct AppState {
     show_full_ticket: Signal<bool>,
     selected_image: Signal<Option<usize>>,
     image_rotation: Signal<i32>,
+    image_zoom: Signal<f32>,
     status_msg: Signal<String>,
     selected_scan: Signal<Option<usize>>,
     selected_shop: Signal<Option<String>>,
@@ -271,6 +274,7 @@ fn App() -> Element {
         show_full_ticket: use_signal(|| false),
         selected_image: use_signal(|| None),
         image_rotation: use_signal(|| 0),
+        image_zoom: use_signal(|| 1.0_f32),
         status_msg: use_signal(|| "Starting...".to_string()),
         selected_scan: use_signal(|| None),
         selected_shop: use_signal(|| None),
@@ -329,7 +333,6 @@ fn App() -> Element {
         QrOverlay {}
         div { class: "content",
             DetailPanel {}
-            ImageViewer {}
             ScanTable {}
         }
     }
@@ -434,6 +437,15 @@ fn DetailPanel() -> Element {
     let edeka_num2 = if is_32 { raw_digits[18..].to_string() } else { String::new() };
     let dm_full = raw_digits.clone();
     let has_image = !image_b64.is_empty();
+
+    // Reset image state when selection changes
+    let mut prev_sel = use_signal(|| sel_idx);
+    if prev_sel() != sel_idx {
+        prev_sel.set(sel_idx);
+        state.image_rotation.set(0);
+        state.image_zoom.set(1.0);
+    }
+
     let det_label = if detected.len() == 1 {
         format!(">> {}", detected[0])
     } else if detected.len() > 1 {
@@ -577,14 +589,34 @@ fn DetailPanel() -> Element {
                 }
             }
 
-            // Inline image
+            // Inline image viewer
             if has_image {
-                img {
-                    src: "data:image/jpeg;base64,{image_b64}",
-                    style: "max-width:100%;max-height:120px;margin-top:8px;cursor:pointer;display:block;border:1px solid #333;",
-                    onclick: move |_| {
-                        state.selected_image.set(Some(sel_idx));
-                        state.image_rotation.set(0);
+                {
+                    let rot = (state.image_rotation)();
+                    let zoom = (state.image_zoom)();
+                    let transform = format!("transform:rotate({rot}deg) scale({zoom});");
+                    rsx! {
+                        div { class: "image-viewer",
+                            img {
+                                class: "modal-image",
+                                src: "data:image/jpeg;base64,{image_b64}",
+                                style: "{transform}cursor:pointer;",
+                                onclick: move |_| { if (state.image_zoom)() > 1.0 { state.image_zoom.set(1.0); } }
+                            }
+                            div { class: "rotate-bar",
+                                button { class: "btn btn-sm",
+                                    onclick: move |_| state.image_rotation.set(((state.image_rotation)() + 180) % 360),
+                                    "Rotate 180°"
+                                }
+                                button { class: "btn btn-sm",
+                                    onclick: move |_| {
+                                        let z = (state.image_zoom)();
+                                        state.image_zoom.set(if z > 1.0 { 1.0 } else { 1.5 });
+                                    },
+                                    if zoom > 1.0 { "Zoom out" } else { "Zoom 150%" }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -611,18 +643,17 @@ fn DetailPanel() -> Element {
                         { shop_url(name).unwrap_or("").to_string() }
                     }
                 }
-                if !detected_for_all.is_empty() {
-                    button { class: "btn btn-sm",
-                        style: "margin-left:auto;",
-                        onclick: move |_| {
-                            for shop in SHOPS.iter().filter(|s| detected_for_all.contains(&s.name)) {
-                                if let Err(e) = opener::open(shop.url) {
-                                    tracing::warn!("browser: {e}");
-                                }
+                button { class: "btn btn-sm",
+                    style: "margin-left:auto;",
+                    onclick: move |_| {
+                        for shop in SHOPS.iter() {
+                            if let Err(e) = opener::open(shop.url) {
+                                tracing::warn!("browser: {e}");
                             }
-                        },
-                        "Open All"
-                    }
+                            std::thread::sleep(std::time::Duration::from_millis(300));
+                        }
+                    },
+                    "Open All"
                 }
             }
         }
@@ -646,24 +677,34 @@ fn ImageViewer() -> Element {
     let src = format!("data:image/jpeg;base64,{}", entry.image_b64);
     let label = format!("{}: {}", entry.kind, entry.code);
     let rot = (state.image_rotation)();
-    let transform = format!("transform:rotate({rot}deg);");
+    let zoom = (state.image_zoom)();
+    let transform = format!("transform:rotate({rot}deg) scale({zoom});");
     drop(scans);
 
     rsx! {
         div { class: "image-viewer",
-            img { class: "modal-image", src: "{src}", style: "{transform}" }
+            img { class: "modal-image", src: "{src}", style: "{transform}cursor:pointer;",
+                onclick: move |_| { if (state.image_zoom)() > 1.0 { state.image_zoom.set(1.0); } }
+            }
             p { style: "margin-top:8px;font-size:11px;color:#555;", "{label}" }
             div { class: "rotate-bar",
                 button { class: "btn btn-sm",
-                    onclick: move |_| state.image_rotation.set(((state.image_rotation)() - 90) % 360),
-                    "< Rot"
+                    onclick: move |_| state.image_rotation.set(((state.image_rotation)() + 180) % 360),
+                    "Rotate 180°"
                 }
                 button { class: "btn btn-sm",
-                    onclick: move |_| state.image_rotation.set(((state.image_rotation)() + 90) % 360),
-                    "Rot >"
+                    onclick: move |_| {
+                        let z = (state.image_zoom)();
+                        state.image_zoom.set(if z > 1.0 { 1.0 } else { 1.5 });
+                    },
+                    if zoom > 1.0 { "Zoom out" } else { "Zoom 150%" }
                 }
                 button { class: "btn btn-sm",
-                    onclick: move |_| { state.selected_image.set(None); state.image_rotation.set(0); },
+                    onclick: move |_| {
+                        state.selected_image.set(None);
+                        state.image_rotation.set(0);
+                        state.image_zoom.set(1.0);
+                    },
                     "Close"
                 }
             }
@@ -694,7 +735,7 @@ fn ScanTable() -> Element {
             table {
                 thead { tr {
                     th { class: "check-col", "" }
-                    th { "#" } th { "Kind" } th { "Code" }
+                    th { "#" } th { "€" } th { "Value €" } th { "Code" }
                     th { "Full code" } th { "Shop" } th { "Img" } th { "Time" }
                 }}
                 tbody {
@@ -713,7 +754,7 @@ fn ScanTable() -> Element {
         table {
             thead { tr {
                 th { class: "check-col", "" }
-                th { "#" } th { "Kind" } th { "Code" }
+                th { "#" } th { "€" } th { "Value €" } th { "Code" }
                 th { "Full code" } th { "Shop" } th { "Img" } th { "Time" }
             }}
             tbody {
@@ -765,7 +806,39 @@ fn render_scan_row(mut state: AppState, i: usize, entry: &ScanEntry) -> Element 
                     },
                 }
             }
-            td { "{i + 1}" }
+            td {
+                {
+                    let mc = entry.manual_count.clone();
+                    let placeholder = "-".to_string();
+                    rsx! {
+                        input {
+                            r#type: "text",
+                            value: "{mc}",
+                            placeholder: "{placeholder}",
+                            maxlength: "3",
+                            style: "width:36px;background:transparent;border:none;border-bottom:1px solid #444;color:inherit;font-size:inherit;text-align:center;outline:none;",
+                            onclick: move |e| e.stop_propagation(),
+                            oninput: move |e| { state.scans.write()[i].manual_count = e.value(); }
+                        }
+                    }
+                }
+            }
+            td {
+                {
+                    let cv = entry.card_value.clone();
+                    rsx! {
+                        input {
+                            r#type: "text",
+                            value: "{cv}",
+                            placeholder: "—",
+                            maxlength: "8",
+                            style: "width:52px;background:transparent;border:none;border-bottom:1px solid #444;color:inherit;font-size:inherit;text-align:right;outline:none;",
+                            onclick: move |e| e.stop_propagation(),
+                            oninput: move |e| { state.scans.write()[i].card_value = e.value(); }
+                        }
+                    }
+                }
+            }
             td { "{entry.kind}" }
             td { style: "font-family:inherit;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;",
                 {
@@ -816,6 +889,7 @@ fn render_scan_row(mut state: AppState, i: usize, entry: &ScanEntry) -> Element 
                             e.stop_propagation();
                             state.selected_image.set(Some(i));
                             state.image_rotation.set(0);
+                            state.image_zoom.set(1.0);
                         },
                     }
                 } else {
@@ -904,6 +978,8 @@ async fn run_iroh(tx: mpsc::UnboundedSender<IrohEvent>) -> anyhow::Result<()> {
                             detected_shops,
                             hidden: false,
                             display_code,
+                            manual_count: String::new(),
+                            card_value: String::new(),
                         };
                         let log_display = entry.extracted_card.as_ref().unwrap_or(&entry.code);
                         info!("Scan: {} - {} (extracted: {})", entry.kind, entry.code, log_display);

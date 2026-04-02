@@ -14,7 +14,7 @@ iroh = { version = "0.97", features = ["address-lookup-mdns"] }
 iroh-tickets = "0.4"
 jni = "0.21"
 ndk-context = "0.1"
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
