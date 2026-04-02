@@ -51,6 +51,9 @@ You can also copy the APK to your phone via USB, a file sharing app, or by openi
 ```sh
 cargo run -p receiver            # debug
 cargo build -p receiver --release  # release binary in target/release/receiver
+# or depending on your installation eg.:
+env -i HOME=$HOME PATH=$PATH   DISPLAY=$DISPLAY   WAYLAND_DISPLAY=$WAYLAND_DISPLAY   XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR   DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS   XAUTHORITY=$XAUTHORITY   target/debug/receiver
+
 ```
 
 ### Android scanner

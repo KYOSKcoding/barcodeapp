@@ -26,14 +26,14 @@ const SHOPS: &[ShopConfig] = &[
         digit_counts: &[13, 39],
     },
     ShopConfig {
-        name: "DM",
-        url: "https://www.dm.de/services/services-im-markt/geschenkkarten",
-        digit_counts: &[24],
-    },
-    ShopConfig {
         name: "EDEKA",
         url: "https://evci.pin-host.com/evci/#/saldo",
         digit_counts: &[32],
+    },
+    ShopConfig {
+        name: "DM",
+        url: "https://www.dm.de/services/services-im-markt/geschenkkarten",
+        digit_counts: &[24, 32],
     },
     ShopConfig {
         name: "ALDI",
@@ -158,6 +158,8 @@ body {
 .btn-sm { padding: 3px 8px; font-size: 11px; }
 .btn-green { background: #0a3a1a; border-color: #1b6b2b; color: #4ade80; }
 .btn-green:hover { background: #1b5e20; }
+.btn-orange { background: #3a1a00; border-color: #c65100; color: #ffa040; }
+.btn-orange:hover { background: #5a2a00; }
 .btn-copy { background: #1a1a3a; border-color: #555; font-size: 11px; padding: 3px 8px; }
 .btn-copy:hover { background: #2a2a5a; }
 .btn-selected { background: #1b5e20 !important; border-color: #4ade80 !important; color: #4ade80 !important; }
@@ -409,7 +411,11 @@ fn DetailPanel() -> Element {
     let mut state = use_context::<AppState>();
     let sel_idx = match (state.selected_scan)() {
         Some(i) => i,
-        None => return rsx! {},
+        None => return rsx! {
+            div { class: "detail-panel",
+                p { style: "color:#444;font-size:13px;", "No scan selected." }
+            }
+        },
     };
     let scans = state.scans.read();
     let entry = match scans.get(sel_idx) {
@@ -419,7 +425,15 @@ fn DetailPanel() -> Element {
     let code_val = entry.code.clone();
     let detected = entry.detected_shops.clone();
     let kind = entry.kind.clone();
-    let code_for_copy = code_val.clone();
+    let extracted = entry.extracted_card.clone();
+    let timestamp = entry.timestamp.clone();
+    let image_b64 = entry.image_b64.clone();
+    let raw_digits: String = entry.code.chars().filter(|c| c.is_ascii_digit()).collect();
+    let is_32 = raw_digits.len() == 32;
+    let edeka_num1 = if is_32 { raw_digits[11..16].to_string() } else { String::new() };
+    let edeka_num2 = if is_32 { raw_digits[18..].to_string() } else { String::new() };
+    let dm_full = raw_digits.clone();
+    let has_image = !image_b64.is_empty();
     let det_label = if detected.len() == 1 {
         format!(">> {}", detected[0])
     } else if detected.len() > 1 {
@@ -432,31 +446,110 @@ fn DetailPanel() -> Element {
         n if n > 1 => "shop-detect ambiguous",
         _ => "shop-detect none",
     };
+    let detected_for_all = detected.clone();
     drop(scans);
 
     rsx! {
         div { class: "detail-panel",
             h3 { "#{sel_idx + 1} {kind}" }
             div { class: "{det_cls}", "{det_label}" }
-            div { class: "detail-row",
-                label { "Card:" }
-                input { r#type: "text", value: "{code_val}", readonly: true }
-                button { class: "btn btn-copy",
-                    onclick: move |_| {
-                        copy_to_clipboard(&code_for_copy);
-                        state.copy_feedback.set(Some("Copied!"));
-                        spawn(async move {
-                            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
-                            state.copy_feedback.set(None);
-                        });
-                    },
-                    "Copy"
+
+            // Trimmed card number(s) + Copy button(s)
+            if is_32 {
+                // 32-digit: two-column DM | EDEKA layout
+                div { style: "display:flex;gap:16px;margin-bottom:8px;",
+                    div { style: "flex:1;",
+                        div { style: "font-size:10px;color:#888;margin-bottom:2px;", "DM" }
+                        span { style: "font-family:monospace;font-size:13px;word-break:break-all;", "{dm_full}" }
+                        {
+                            let dm = dm_full.clone();
+                            rsx! {
+                                button { class: "btn btn-copy btn-sm",
+                                    style: "display:block;margin-top:4px;",
+                                    onclick: move |_| {
+                                        copy_to_clipboard(&dm);
+                                        state.copy_feedback.set(Some("Copied!"));
+                                        spawn(async move {
+                                            tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                                            state.copy_feedback.set(None);
+                                        });
+                                    },
+                                    "Copy DM"
+                                }
+                            }
+                        }
+                    }
+                    div { style: "flex:1;",
+                        div { style: "font-size:10px;color:#888;margin-bottom:2px;", "EDEKA" }
+                        span { style: "font-family:monospace;font-size:13px;", "{edeka_num1}  {edeka_num2}" }
+                        div { style: "display:flex;gap:4px;margin-top:4px;",
+                            {
+                                let n1 = edeka_num1.clone();
+                                rsx! {
+                                    button { class: "btn btn-copy btn-sm",
+                                        onclick: move |_| {
+                                            copy_to_clipboard(&n1);
+                                            state.copy_feedback.set(Some("Copied!"));
+                                            spawn(async move {
+                                                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                                                state.copy_feedback.set(None);
+                                            });
+                                        },
+                                        "Copy EDEKA 1"
+                                    }
+                                }
+                            }
+                            {
+                                let n2 = edeka_num2.clone();
+                                rsx! {
+                                    button { class: "btn btn-copy btn-sm",
+                                        onclick: move |_| {
+                                            copy_to_clipboard(&n2);
+                                            state.copy_feedback.set(Some("Copied!"));
+                                            spawn(async move {
+                                                tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                                                state.copy_feedback.set(None);
+                                            });
+                                        },
+                                        "Copy EDEKA 2"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(msg) = (state.copy_feedback)() {
+                    span { class: "copied-toast", "{msg}" }
+                }
+            } else {
+                div { class: "detail-row",
+                    if let Some(card) = extracted.clone() {
+                        span { style: "font-family:monospace;color:#4ade80;font-weight:bold;font-size:14px;", "{card}" }
+                        button { class: "btn btn-copy",
+                            onclick: move |_| {
+                                copy_to_clipboard(&card);
+                                state.copy_feedback.set(Some("Copied!"));
+                                spawn(async move {
+                                    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+                                    state.copy_feedback.set(None);
+                                });
+                            },
+                            "Copy"
+                        }
+                    } else {
+                        span { style: "color:#444;font-size:13px;", "--" }
+                    }
+                    if let Some(msg) = (state.copy_feedback)() {
+                        span { class: "copied-toast", "{msg}" }
+                    }
                 }
             }
-            if let Some(msg) = (state.copy_feedback)() {
-                span { class: "copied-toast", "{msg}" }
-            }
-            div { style: "margin-top:8px;",
+
+            // Timestamp
+            div { style: "font-size:11px;color:#555;margin-bottom:8px;", "{timestamp}" }
+
+            // Shop selector
+            div { style: "margin-top:0;",
                 label { style: "font-size:11px;color:#555;", "Shop:" }
                 div { class: "shop-buttons",
                     for shop in SHOPS.iter() {
@@ -465,7 +558,7 @@ fn DetailPanel() -> Element {
                             let name2 = name.clone();
                             let is_sel = state.selected_shop.read().as_deref() == Some(shop.name);
                             let cls = if is_sel { "btn btn-sm btn-selected" }
-                                else if detected.contains(&shop.name) { "btn btn-sm btn-green" }
+                                else if detected.contains(&shop.name) { if detected.len() > 1 { "btn btn-sm btn-orange" } else { "btn btn-sm btn-green" } }
                                 else { "btn btn-sm" };
                             rsx! {
                                 button { class: "{cls}",
@@ -483,6 +576,23 @@ fn DetailPanel() -> Element {
                     }
                 }
             }
+
+            // Inline image
+            if has_image {
+                img {
+                    src: "data:image/jpeg;base64,{image_b64}",
+                    style: "max-width:100%;max-height:120px;margin-top:8px;cursor:pointer;display:block;border:1px solid #333;",
+                    onclick: move |_| {
+                        state.selected_image.set(Some(sel_idx));
+                        state.image_rotation.set(0);
+                    }
+                }
+            }
+
+            // Full raw code
+            div { style: "margin-top:8px;font-size:11px;color:#555;word-break:break-all;", "{code_val}" }
+
+            // Actions
             div { class: "action-row",
                 button { class: "btn btn-green btn-sm",
                     disabled: state.selected_shop.read().is_none(),
@@ -499,6 +609,19 @@ fn DetailPanel() -> Element {
                 if let Some(name) = state.selected_shop.read().as_deref() {
                     span { style: "font-size:10px;color:#444;",
                         { shop_url(name).unwrap_or("").to_string() }
+                    }
+                }
+                if !detected_for_all.is_empty() {
+                    button { class: "btn btn-sm",
+                        style: "margin-left:auto;",
+                        onclick: move |_| {
+                            for shop in SHOPS.iter().filter(|s| detected_for_all.contains(&s.name)) {
+                                if let Err(e) = opener::open(shop.url) {
+                                    tracing::warn!("browser: {e}");
+                                }
+                            }
+                        },
+                        "Open All"
                     }
                 }
             }
@@ -572,7 +695,7 @@ fn ScanTable() -> Element {
                 thead { tr {
                     th { class: "check-col", "" }
                     th { "#" } th { "Kind" } th { "Code" }
-                    th { "Extracted" } th { "Shop" } th { "Img" } th { "Time" }
+                    th { "Full code" } th { "Shop" } th { "Img" } th { "Time" }
                 }}
                 tbody {
                     tr {
@@ -591,7 +714,7 @@ fn ScanTable() -> Element {
             thead { tr {
                 th { class: "check-col", "" }
                 th { "#" } th { "Kind" } th { "Code" }
-                th { "Extracted" } th { "Shop" } th { "Img" } th { "Time" }
+                th { "Full code" } th { "Shop" } th { "Img" } th { "Time" }
             }}
             tbody {
                 for (i, entry) in entries.into_iter().rev() {
@@ -645,22 +768,47 @@ fn render_scan_row(mut state: AppState, i: usize, entry: &ScanEntry) -> Element 
             td { "{i + 1}" }
             td { "{entry.kind}" }
             td { style: "font-family:inherit;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;",
-                "{entry.display_code}"
+                {
+                    let dc = entry.display_code.clone();
+                    let dc_copy = dc.clone();
+                    rsx! {
+                        div { style: "display:flex;align-items:center;gap:4px;",
+                            span { style: "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;", "{dc}" }
+                            button { class: "btn btn-copy btn-sm",
+                                onclick: move |e| { e.stop_propagation(); copy_to_clipboard(&dc_copy); },
+                                "Copy"
+                            }
+                        }
+                    }
+                }
             }
             td { style: "font-family:monospace;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;",
                 if let Some(extracted) = entry.extracted_card.clone() {
-                    span { style: "color:green;font-weight:bold;cursor:pointer;",
-                        onclick: move |e| {
-                            e.stop_propagation();
-                            copy_to_clipboard(&extracted);
-                        },
-                        "{extracted} 📋"
+                    {
+                        let extracted_copy = extracted.clone();
+                        rsx! {
+                            div { style: "display:flex;align-items:center;gap:4px;",
+                                span { style: "color:green;font-weight:bold;", "{extracted}" }
+                                button { class: "btn btn-copy btn-sm",
+                                    onclick: move |e| { e.stop_propagation(); copy_to_clipboard(&extracted_copy); },
+                                    "Copy"
+                                }
+                            }
+                        }
                     }
                 } else {
                     span { style: "color:#999;", "--" }
                 }
             }
-            td { "{shop_str}" }
+            td {
+                if entry.detected_shops.len() > 1 {
+                    span { style: "color:#ffa040;", "{shop_str}" }
+                } else if entry.detected_shops.len() == 1 {
+                    span { style: "color:#4ade80;", "{shop_str}" }
+                } else {
+                    span { style: "color:#555;", "{shop_str}" }
+                }
+            }
             td {
                 if has_image {
                     img { class: "thumb", src: "{src}",
@@ -763,7 +911,7 @@ async fn run_iroh(tx: mpsc::UnboundedSender<IrohEvent>) -> anyhow::Result<()> {
                     }
                     Err(e) => {
                         tracing::warn!("recv error: {e:#}");
-                        break;
+                        continue;
                     }
                 }
             }

@@ -63,8 +63,7 @@ pub async fn send_scan(conn: &Connection, result: &ScanResult) -> Result<()> {
     send.write_all(code_bytes).await?;
 
     // Write image
-    send.write_all(&(result.image_jpeg.len() as u32).to_be_bytes())
-        .await?;
+    send.write_all(&(result.image_jpeg.len() as u32).to_be_bytes()).await?;
     if !result.image_jpeg.is_empty() {
         send.write_all(&result.image_jpeg).await?;
     }
