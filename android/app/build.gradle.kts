@@ -40,6 +40,9 @@ android {
 }
 
 dependencies {
+    // KMP shared module (shop detection, card extraction, state enum)
+    implementation(project(":shared"))
+
     implementation(libs.core.ktx)
     implementation(libs.appcompat)
     implementation(libs.activity.ktx)

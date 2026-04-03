@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        Multicast networking entitlement.
+        Required if iroh's mDNS feature is enabled (address-lookup-mdns).
+        Currently disabled in ios/rust/Cargo.toml; enable when Apple grants this entitlement.
+
+        To request: https://developer.apple.com/contact/request/networking-multicast
+    -->
+    <!-- <key>com.apple.developer.networking.multicast</key> -->
+    <!-- <true/> -->
+</dict>
+</plist>

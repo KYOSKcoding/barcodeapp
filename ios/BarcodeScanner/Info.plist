@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!-- Camera permission — required for barcode scanning via AVCaptureSession -->
+    <key>NSCameraUsageDescription</key>
+    <string>The app uses the camera to scan barcodes and QR codes.</string>
+
+    <!-- Local network permission — required for iroh QUIC connections on the local network -->
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>The app connects to a receiver on your local network to transfer scanned codes.</string>
+
+    <!-- Bonjour services advertised/browsed (needed for NSLocalNetworkUsageDescription to work) -->
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_iroh._udp</string>
+    </array>
+
+    <key>CFBundleDisplayName</key>
+    <string>Barcode Scanner</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.example.barcodescanner</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>0.1.0</string>
+    <key>UILaunchScreen</key>
+    <dict/>
+    <key>UISupportedInterfaceOrientations</key>
+    <array>
+        <string>UIInterfaceOrientationPortrait</string>
+        <string>UIInterfaceOrientationLandscapeLeft</string>
+        <string>UIInterfaceOrientationLandscapeRight</string>
+    </array>
+</dict>
+</plist>

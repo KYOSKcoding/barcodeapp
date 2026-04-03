@@ -1,0 +1,70 @@
+# xcodegen project specification
+# Run `xcodegen` in this directory to regenerate BarcodeScanner.xcodeproj.
+# Install xcodegen: brew install xcodegen
+
+name: BarcodeScanner
+options:
+  bundleIdPrefix: com.example
+  deploymentTarget:
+    iOS: "16.0"
+  xcodeVersion: "16"
+  generateEmptyDirectories: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    IPHONEOS_DEPLOYMENT_TARGET: "16.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    DEVELOPMENT_TEAM: ""  # Set via APPLE_TEAM_ID in CI or locally in Xcode
+    CODE_SIGN_STYLE: Automatic
+
+targets:
+  BarcodeScanner:
+    type: application
+    platform: iOS
+    sources:
+      - path: BarcodeScanner
+        includes: ["**/*.swift"]
+        excludes: ["**/*.h"]
+    resources:
+      - BarcodeScanner/Info.plist
+
+    settings:
+      base:
+        INFOPLIST_FILE: BarcodeScanner/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.barcodescanner
+        SWIFT_OBJC_BRIDGING_HEADER: BarcodeScanner/BarcodeScanner-Bridging-Header.h
+
+        # XCFrameworks: built by build-ios.sh and ./gradlew assembleSharedXCFramework
+        # They live in $(SRCROOT)/../dist/ after being built.
+        FRAMEWORK_SEARCH_PATHS:
+          - "$(SRCROOT)/../dist"
+          - "$(inherited)"
+
+    dependencies:
+      # Rust C-FFI static library (built by build-ios.sh)
+      - framework: ../dist/BarcodeScanner.xcframework
+        embed: false  # static lib — no embedding needed
+      # KMP shared business-logic framework (built by Gradle assembleSharedXCFramework)
+      - framework: ../dist/shared.xcframework
+        embed: true   # KMP produces a dynamic framework for iOS
+
+    entitlements:
+      path: BarcodeScanner/BarcodeScanner.entitlements
+
+schemes:
+  BarcodeScanner:
+    build:
+      targets:
+        BarcodeScanner: all
+    run:
+      config: Debug
+    test:
+      config: Debug
+    profile:
+      config: Release
+    analyze:
+      config: Debug
+    archive:
+      config: Release

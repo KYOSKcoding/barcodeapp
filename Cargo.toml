@@ -5,6 +5,6 @@ members = [
     "receiver",
 ]
 
-exclude = ["android/rust"]
-
-# android/rust is built separately via cargo-ndk, but shares barcode-proto
+# android/rust is built separately via cargo-ndk (see .github/workflows/release.yml)
+# ios/rust is built separately by build-ios.sh (requires macOS + iOS toolchain)
+exclude = ["android/rust", "ios/rust"]

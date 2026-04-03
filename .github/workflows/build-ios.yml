@@ -1,0 +1,151 @@
+name: Build iOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-ios:
+    name: Build & smoke-test iOS Simulator
+    runs-on: macos-latest
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Rust toolchain ──────────────────────────────────────────────────────
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Add iOS targets
+        run: |
+          rustup target add \
+            aarch64-apple-ios \
+            aarch64-apple-ios-sim \
+            x86_64-apple-ios
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+
+      # ── Build Rust XCFramework ───────────────────────────────────────────────
+      - name: Build BarcodeScanner.xcframework (Rust C-FFI)
+        run: ./build-ios.sh
+        # Note: --debug flag can be used for faster CI builds:
+        # run: ./build-ios.sh --debug
+
+      # ── JDK + Gradle (for KMP shared module) ────────────────────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: "17"
+          distribution: temurin
+
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('android/**/*.kts', 'shared/**/*.kts') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Build shared.xcframework (KMP)
+        working-directory: android
+        run: ./gradlew :shared:assembleSharedXCFramework
+
+      - name: Copy shared.xcframework to dist/
+        run: |
+          mkdir -p dist
+          # The shared module's projectDir is barcodeapp/shared/ (not android/shared/)
+          cp -R shared/build/XCFrameworks/release/shared.xcframework dist/
+
+      # ── Xcode project generation ─────────────────────────────────────────────
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        working-directory: ios
+        run: xcodegen
+
+      # ── Simulator smoke test (no signing required) ───────────────────────────
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Build for iOS Simulator (smoke test)
+        run: |
+          SIM=$(xcrun simctl list devices available | grep -oE 'iPhone [0-9]+( Pro)?' | head -1 || echo "iPhone 16")
+          echo "Using simulator: $SIM"
+          xcodebuild \
+            -project ios/BarcodeScanner.xcodeproj \
+            -scheme BarcodeScanner \
+            -destination "platform=iOS Simulator,name=$SIM" \
+            -configuration Debug \
+            CODE_SIGNING_ALLOWED=NO \
+            SWIFT_TREAT_WARNINGS_AS_ERRORS=NO \
+            build
+
+      # ── Optional: archive + export IPA (requires signing secrets) ────────────
+      # Uncomment and configure secrets to enable device/App Store distribution:
+      #
+      # - name: Import signing certificate
+      #   if: github.event_name == 'push'
+      #   env:
+      #     APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      #     APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      #   run: |
+      #     echo "$APPLE_CERTIFICATE" | base64 --decode > /tmp/cert.p12
+      #     security create-keychain -p "" build.keychain
+      #     security import /tmp/cert.p12 -k build.keychain -P "$APPLE_CERTIFICATE_PASSWORD" \
+      #       -T /usr/bin/codesign
+      #     security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
+      #     security list-keychains -d user -s build.keychain
+      #
+      # - name: Install provisioning profile
+      #   if: github.event_name == 'push'
+      #   env:
+      #     APPLE_PROVISIONING_PROFILE: ${{ secrets.APPLE_PROVISIONING_PROFILE }}
+      #   run: |
+      #     mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+      #     echo "$APPLE_PROVISIONING_PROFILE" | base64 --decode \
+      #       > ~/Library/MobileDevice/Provisioning\ Profiles/dist.mobileprovision
+      #
+      # - name: Archive
+      #   if: github.event_name == 'push'
+      #   env:
+      #     APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      #   run: |
+      #     xcodebuild \
+      #       -project ios/BarcodeScanner.xcodeproj \
+      #       -scheme BarcodeScanner \
+      #       -configuration Release \
+      #       -archivePath /tmp/BarcodeScanner.xcarchive \
+      #       DEVELOPMENT_TEAM="$APPLE_TEAM_ID" \
+      #       archive
+      #
+      # - name: Export IPA
+      #   if: github.event_name == 'push'
+      #   run: |
+      #     cat > /tmp/export_options.plist <<'PLIST'
+      #     <?xml version="1.0" encoding="UTF-8"?>
+      #     <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" ...>
+      #     <plist version="1.0"><dict>
+      #       <key>method</key><string>ad-hoc</string>
+      #     </dict></plist>
+      #     PLIST
+      #     xcodebuild -exportArchive \
+      #       -archivePath /tmp/BarcodeScanner.xcarchive \
+      #       -exportOptionsPlist /tmp/export_options.plist \
+      #       -exportPath /tmp/BarcodeScanner.ipa
+      #
+      # - name: Upload IPA
+      #   if: github.event_name == 'push'
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: BarcodeScanner.ipa
+      #     path: /tmp/BarcodeScanner.ipa/

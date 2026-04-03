@@ -26,50 +26,12 @@ import java.io.ByteArrayOutputStream
 
 private const val TAG = "BarcodeScanner"
 
-// ── Shop detection ────────────────────────────────────────────────────
-
-private data class ShopInfo(val name: String, val url: String, val digitCounts: List<Int>)
-
-private val SHOPS = listOf(
-    ShopInfo("REWE",  "https://kartenwelt.rewe.de/rewe-geschenkkarte.html",          listOf(13, 39)),
-    ShopInfo("DM",    "https://www.dm.de/services/services-im-markt/geschenkkarten", listOf(24, 32)),
-    ShopInfo("EDEKA", "https://evci.pin-host.com/evci/#/saldo",                      listOf(32)),
-    ShopInfo("ALDI",  "https://www.helaba.com/de/aldi/",                             listOf(20, 36, 38)),
-    ShopInfo("LIDL",  "https://www.lidl.de/c/lidl-geschenkkarten/s10007775",         listOf(18, 20, 36, 38)),
-)
-
-private fun detectShops(code: String): List<ShopInfo> {
-    val n = code.count { it.isDigit() }
-    return SHOPS.filter { n in it.digitCounts }
-}
-
-/** Returns 1 number for most shops, 2 numbers for 32-digit (EDEKA/DM) cards. */
-private fun extractCardNumbers(code: String): List<String> {
-    val digits = code.filter { it.isDigit() }
-    if (digits.isEmpty()) return emptyList()
-    return when (digits.length) {
-        39        -> listOf(digits.substring(0, 13))                              // REWE 39 → first 13
-        38        -> listOf(digits.substring(18))                                 // ALDI/LIDL 38 → drop 18, keep 20
-        36        -> listOf(digits.substring(18))                                 // ALDI/LIDL 36 → drop 18, keep 18
-        32        -> listOf(digits.substring(11, 16), digits.substring(18))      // EDEKA/DM 32 → two numbers
-        in 10..31 -> listOf(digits)                                              // DM 24, REWE 13, LIDL 18/20, ALDI 20
-        else      -> emptyList()
-    }
-}
+// ShopInfo, SHOPS, detectShops, and extractCardNumbers are now in the :shared KMP module.
 
 class MainActivity : AppCompatActivity() {
 
-    private enum class State {
-        IDLE,
-        SCANNING_TICKET,
-        CONNECTING,
-        READY,
-        SCANNING_CODE,
-        SCANNED,
-        SENDING,
-    }
-
-    private var state = State.IDLE
+    // BarcodeState is defined in the :shared KMP module (shared/src/commonMain/...)
+    private var state = BarcodeState.IDLE
     private var isLocalMode = false
     private var sessionHandle: Long = 0L
     private var lastScannedCode: String? = null
@@ -152,21 +114,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun onJumpToScan() {
-        state = State.READY
+        state = BarcodeState.READY
         updateUI()
     }
 
     private fun onScanPhoneClicked() {
         isLocalMode = true
-        state = State.SCANNING_CODE
+        state = BarcodeState.SCANNING_CODE
         updateUI()
         launchCodeScanner()
     }
 
     private fun onActionButtonClicked() {
         when (state) {
-            State.IDLE -> {
-                state = State.SCANNING_TICKET
+            BarcodeState.IDLE -> {
+                state = BarcodeState.SCANNING_TICKET
                 updateUI()
                 val options = ScanOptions().apply {
                     setDesiredBarcodeFormats(ScanOptions.QR_CODE)
@@ -176,14 +138,14 @@ class MainActivity : AppCompatActivity() {
                 }
                 ticketScanLauncher.launch(options)
             }
-            State.READY -> {
-                state = State.SCANNING_CODE
+            BarcodeState.READY -> {
+                state = BarcodeState.SCANNING_CODE
                 updateUI()
                 launchCodeScanner()
             }
-            State.SCANNED -> {
+            BarcodeState.SCANNED -> {
                 if (isLocalMode) {
-                    state = State.SCANNING_CODE
+                    state = BarcodeState.SCANNING_CODE
                     updateUI()
                     launchCodeScanner()
                 } else {
@@ -198,13 +160,13 @@ class MainActivity : AppCompatActivity() {
         val ticket = result.contents
         if (ticket == null) {
             Log.w(TAG, "Ticket scan cancelled")
-            state = State.IDLE
+            state = BarcodeState.IDLE
             updateUI()
             return
         }
 
         Log.i(TAG, "Ticket scanned, connecting...")
-        state = State.CONNECTING
+        state = BarcodeState.CONNECTING
         updateUI()
 
         lifecycleScope.launch(Dispatchers.IO) {
@@ -213,10 +175,10 @@ class MainActivity : AppCompatActivity() {
                 withContext(Dispatchers.Main) {
                     if (handle != 0L) {
                         sessionHandle = handle
-                        state = State.READY
+                        state = BarcodeState.READY
                         Log.i(TAG, "Connected successfully")
                     } else {
-                        state = State.IDLE
+                        state = BarcodeState.IDLE
                         Log.e(TAG, "Connection failed (handle=0)")
                     }
                     updateUI()
@@ -224,7 +186,7 @@ class MainActivity : AppCompatActivity() {
             } catch (e: Exception) {
                 Log.e(TAG, "Connection error", e)
                 withContext(Dispatchers.Main) {
-                    state = State.IDLE
+                    state = BarcodeState.IDLE
                     statusText.text = "Connection failed: ${e.message}"
                     updateUI()
                 }
@@ -240,9 +202,9 @@ class MainActivity : AppCompatActivity() {
             Log.w(TAG, "Code scan cancelled")
             if (isLocalMode) {
                 isLocalMode = false
-                state = State.IDLE
+                state = BarcodeState.IDLE
             } else {
-                state = State.READY
+                state = BarcodeState.READY
             }
             updateUI()
             return
@@ -259,7 +221,7 @@ class MainActivity : AppCompatActivity() {
         lastScannedImageJpeg = extractBarcodeImage(result)
         Log.i(TAG, "Image size: ${lastScannedImageJpeg?.size ?: 0} bytes")
 
-        state = State.SCANNED
+        state = BarcodeState.SCANNED
         updateUI()
     }
 
@@ -313,7 +275,7 @@ class MainActivity : AppCompatActivity() {
         val kind = if (format == "QR_CODE") 1 else 0
         val imageJpeg = lastScannedImageJpeg ?: ByteArray(0)
 
-        state = State.SENDING
+        state = BarcodeState.SENDING
         updateUI()
 
         val timeoutSecs = 15
@@ -330,16 +292,16 @@ class MainActivity : AppCompatActivity() {
                 withContext(Dispatchers.Main) {
                     countdownJob?.cancel()
                     countdownJob = null
-                    if (state != State.SENDING) return@withContext
+                    if (state != BarcodeState.SENDING) return@withContext
                     if (success) {
                         Log.i(TAG, "Scan sent successfully")
                         statusText.text = "Sent!"
-                        state = State.READY
+                        state = BarcodeState.READY
                     } else {
                         Log.e(TAG, "Failed to send scan (timeout or connection lost)")
                         statusText.text = "Send failed — reconnect required"
                         sessionHandle = 0L
-                        state = State.IDLE
+                        state = BarcodeState.IDLE
                     }
                     updateUI()
                 }
@@ -348,10 +310,10 @@ class MainActivity : AppCompatActivity() {
                 withContext(Dispatchers.Main) {
                     countdownJob?.cancel()
                     countdownJob = null
-                    if (state != State.SENDING) return@withContext
+                    if (state != BarcodeState.SENDING) return@withContext
                     statusText.text = "Send error — reconnect required"
                     sessionHandle = 0L
-                    state = State.IDLE
+                    state = BarcodeState.IDLE
                     updateUI()
                 }
             }
@@ -369,7 +331,7 @@ class MainActivity : AppCompatActivity() {
         lastTrimmedNumbers = emptyList()
         lastDetectedShops = emptyList()
         isLocalMode = false
-        state = State.IDLE
+        state = BarcodeState.IDLE
         Log.i(TAG, "Back to home (session kept)")
         updateUI()
     }
@@ -392,7 +354,7 @@ class MainActivity : AppCompatActivity() {
         lastTrimmedNumbers = emptyList()
         lastDetectedShops = emptyList()
         isLocalMode = false
-        state = State.IDLE
+        state = BarcodeState.IDLE
         Log.i(TAG, "Disconnected")
         updateUI()
     }
@@ -495,16 +457,16 @@ class MainActivity : AppCompatActivity() {
 
     private fun updateUI() {
         // "Scan on phone" button only visible on idle screen
-        scanPhoneButton.visibility = if (state == State.IDLE) android.view.View.VISIBLE else android.view.View.GONE
+        scanPhoneButton.visibility = if (state == BarcodeState.IDLE) android.view.View.VISIBLE else android.view.View.GONE
 
         // "Jump to scanning" only visible on idle screen when already connected
-        jumpToScanButton.visibility = if (state == State.IDLE && sessionHandle != 0L) android.view.View.VISIBLE else android.view.View.GONE
+        jumpToScanButton.visibility = if (state == BarcodeState.IDLE && sessionHandle != 0L) android.view.View.VISIBLE else android.view.View.GONE
 
         // Cancel button only visible while sending
-        cancelSendButton.visibility = if (state == State.SENDING) android.view.View.VISIBLE else android.view.View.GONE
+        cancelSendButton.visibility = if (state == BarcodeState.SENDING) android.view.View.VISIBLE else android.view.View.GONE
 
         // Back button shown in READY and SCANNED (not SENDING — use Cancel instead)
-        val showBack = state == State.READY || state == State.SCANNED
+        val showBack = state == BarcodeState.READY || state == BarcodeState.SCANNED
         disconnectButton.visibility = if (showBack) android.view.View.VISIBLE else android.view.View.GONE
         disconnectActionButton.visibility = if (showBack) android.view.View.VISIBLE else android.view.View.GONE
 
@@ -514,31 +476,31 @@ class MainActivity : AppCompatActivity() {
         shopLinksContainer.visibility = android.view.View.GONE
 
         when (state) {
-            State.IDLE -> {
+            BarcodeState.IDLE -> {
                 statusText.text = ""
                 codeText.text = ""
                 actionButton.text = "Connect to Receiver"
                 actionButton.isEnabled = true
             }
-            State.SCANNING_TICKET -> {
+            BarcodeState.SCANNING_TICKET -> {
                 statusText.text = "Scanning ticket..."
                 actionButton.isEnabled = false
             }
-            State.CONNECTING -> {
+            BarcodeState.CONNECTING -> {
                 statusText.text = "Connecting..."
                 actionButton.isEnabled = false
             }
-            State.READY -> {
+            BarcodeState.READY -> {
                 statusText.text = "Connected"
                 codeText.text = ""
                 actionButton.text = "Scan"
                 actionButton.isEnabled = true
             }
-            State.SCANNING_CODE -> {
+            BarcodeState.SCANNING_CODE -> {
                 statusText.text = "Scanning..."
                 actionButton.isEnabled = false
             }
-            State.SCANNED -> {
+            BarcodeState.SCANNED -> {
                 statusText.text = "Scanned: ${lastScannedFormat ?: "unknown"}"
                 val raw = lastScannedCode ?: ""
                 // Trimmed number(s) — for 32-digit show first (smaller) number only; otherwise trimmed
@@ -563,7 +525,7 @@ class MainActivity : AppCompatActivity() {
                 actionButton.text = if (isLocalMode) "Scan Again" else "Send"
                 actionButton.isEnabled = true
             }
-            State.SENDING -> {
+            BarcodeState.SENDING -> {
                 statusText.text = "Sending..."
                 actionButton.isEnabled = false
             }

@@ -1,0 +1,19 @@
+[package]
+name = "barcode-scanner-ios"
+version = "0.1.0"
+edition = "2024"
+description = "C-FFI bridge for the barcode scanner iOS app"
+publish = false
+
+[lib]
+name = "barcode_scanner_ios"
+crate-type = ["staticlib"]
+
+[dependencies]
+barcode-proto = { path = "../../barcode-proto" }
+iroh = { version = "0.97" }
+iroh-tickets = "0.4"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
