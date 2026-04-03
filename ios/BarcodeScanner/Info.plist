@@ -16,10 +16,12 @@
         <string>_iroh._udp</string>
     </array>
 
+    <key>CFBundleExecutable</key>
+    <string>$(EXECUTABLE_NAME)</string>
     <key>CFBundleDisplayName</key>
     <string>Barcode Scanner</string>
     <key>CFBundleIdentifier</key>
-    <string>com.example.barcodescanner</string>
+    <string>com.kyosk.barcodescanner</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>CFBundleShortVersionString</key>

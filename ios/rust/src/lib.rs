@@ -13,8 +13,8 @@ use std::sync::OnceLock;
 
 use anyhow::{Context, Result};
 use barcode_proto::{CodeKind, ScanResult, ALPN};
-use iroh::{Endpoint, endpoint::Connection};
-use iroh_tickets::EndpointTicket;
+use iroh::{Endpoint, EndpointAddr, endpoint::Connection};
+use iroh_tickets::endpoint::EndpointTicket;
 use tokio::runtime::Runtime;
 use tracing::info;
 
@@ -62,7 +62,7 @@ impl SessionHandle {
 
 async fn do_connect(ticket_str: String) -> Result<SessionHandle> {
     info!("parsing ticket...");
-    let ticket = EndpointTicket::deserialize(&ticket_str).context("parse EndpointTicket")?;
+    let ticket: EndpointTicket = ticket_str.parse().context("parse EndpointTicket")?;
 
     info!("creating endpoint...");
     let ep = Endpoint::builder(iroh::endpoint::presets::N0)
@@ -75,9 +75,9 @@ async fn do_connect(ticket_str: String) -> Result<SessionHandle> {
     // Apple requires the com.apple.developer.networking.multicast entitlement
     // for raw multicast sockets. Users must use the full ticket URL.
 
-    let addr = ticket.endpoint_addr().clone();
+    let addr: EndpointAddr = ticket.endpoint_addr().clone();
     info!("connecting to {:?}...", addr);
-    let conn = ep.connect(addr, ALPN).await.context("connect to endpoint")?;
+    let conn: Connection = ep.connect(addr, ALPN).await.context("connect to endpoint")?;
     info!("connected!");
 
     Ok(SessionHandle {

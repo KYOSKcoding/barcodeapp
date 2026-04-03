@@ -100,7 +100,7 @@ make_framework() {
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>com.example.barcodescanner.rust</string>
+    <string>com.kyosk.barcodescanner.rust</string>
     <key>CFBundleName</key>
     <string>BarcodeScanner</string>
     <key>CFBundlePackageType</key>
