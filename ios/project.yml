@@ -33,7 +33,7 @@ targets:
     settings:
       base:
         INFOPLIST_FILE: BarcodeScanner/Info.plist
-        PRODUCT_BUNDLE_IDENTIFIER: com.example.barcodescanner
+        PRODUCT_BUNDLE_IDENTIFIER: com.kyosk.barcodescanner
         SWIFT_OBJC_BRIDGING_HEADER: BarcodeScanner/BarcodeScanner-Bridging-Header.h
 
         # XCFrameworks: built by build-ios.sh and ./gradlew assembleSharedXCFramework
