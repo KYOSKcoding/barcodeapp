@@ -204,7 +204,7 @@ pub extern "system" fn Java_com_example_barcodescanner_IrohBridge_sendScan(
 
     match runtime().block_on(async {
         tokio::time::timeout(
-            std::time::Duration::from_secs(15),
+            std::time::Duration::from_secs(5),
             barcode_proto::send_scan(&session.connection, &scan),
         )
         .await
@@ -218,10 +218,76 @@ pub extern "system" fn Java_com_example_barcodescanner_IrohBridge_sendScan(
             jni::sys::JNI_FALSE as jboolean
         }
         Err(_) => {
-            tracing::error!("send_scan timed out after 15s");
+            tracing::error!("send_scan timed out after 5s");
             jni::sys::JNI_FALSE as jboolean
         }
     }
+}
+
+/// Send a sync poll to the receiver: ask which of the given codes are checked.
+/// [codes_nl] is a newline-separated list of code strings.
+/// Returns a newline-separated list of "code\x1fchecked" pairs (0 or 1),
+/// or empty string on error.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_example_barcodescanner_IrohBridge_syncCheckedState(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+    codes_nl: JString,
+) -> jni::sys::jstring {
+    if handle == 0 {
+        return env.new_string("").map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+    }
+
+    let session = unsafe { SessionHandle::from_raw(handle) };
+
+    let codes_str: String = match env.get_string(&codes_nl) {
+        Ok(s) => s.into(),
+        Err(e) => {
+            tracing::error!("syncCheckedState: failed to get codes string: {e}");
+            return env.new_string("").map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+        }
+    };
+
+    let codes: Vec<String> = codes_str
+        .lines()
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect();
+
+    if codes.is_empty() {
+        return env.new_string("").map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+    }
+
+    let result = runtime().block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            barcode_proto::send_sync_poll(&session.connection, &codes),
+        )
+        .await
+    });
+
+    let pairs = match result {
+        Ok(Ok(pairs)) => pairs,
+        Ok(Err(e)) => {
+            tracing::warn!("sync poll failed: {e:#}");
+            return env.new_string("").map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+        }
+        Err(_) => {
+            tracing::warn!("sync poll timed out");
+            return env.new_string("").map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+        }
+    };
+
+    let result_str: String = pairs
+        .iter()
+        .map(|(code, checked)| format!("{}\x1f{}", code, if *checked { "1" } else { "0" }))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    env.new_string(result_str)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
 }
 
 /// Check if the connection is still alive.

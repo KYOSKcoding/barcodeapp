@@ -2,11 +2,16 @@
 //!
 //! ALPN: `barcodescan/0`
 //!
-//! Each scanned code uses one bidi stream:
-//! - Scanner opens bidi stream
-//! - Scanner sends: kind(u8) | code_len(u32 BE) | code(bytes) | image_len(u32 BE) | image_jpeg(bytes)
-//! - Scanner finishes send side
-//! - Receiver reads all, sends ACK(u8 0x01), finishes send side
+//! Each bidi stream begins with a routing byte:
+//!   0x00 / 0x01 — scan stream (kind = Barcode / QR Code)
+//!     Scanner sends: kind(u8) | code_len(u32 BE) | code(bytes) | image_len(u32 BE) | image_jpeg(bytes)
+//!     Scanner finishes send side
+//!     Receiver reads all, sends ACK(u8 0x01), finishes send side
+//!   0x10 — sync poll stream
+//!     Phone sends: 0x10 | num_codes(u32 BE) | [code_len(u32 BE) | code(bytes)]*
+//!     Phone finishes send side
+//!     Receiver replies: num_entries(u32 BE) | [code_len(u32 BE) | code(bytes) | checked(u8)]*
+//!     Receiver finishes send side
 
 use anyhow::{Context, Result, bail};
 use iroh::endpoint::{Connection, RecvStream, SendStream};
@@ -48,6 +53,7 @@ pub struct ScanResult {
 }
 
 const ACK: u8 = 0x01;
+const SYNC_POLL: u8 = 0x10;
 
 /// Scanner side: send a scan result over a bidi stream.
 pub async fn send_scan(conn: &Connection, result: &ScanResult) -> Result<()> {
@@ -81,11 +87,13 @@ pub async fn send_scan(conn: &Connection, result: &ScanResult) -> Result<()> {
 }
 
 /// Receiver side: read a scan result from an accepted bidi stream.
-pub async fn recv_scan(send: &mut SendStream, recv: &mut RecvStream) -> Result<ScanResult> {
-    // Read kind
-    let mut kind_buf = [0u8; 1];
-    recv.read_exact(&mut kind_buf).await.context("read kind")?;
-    let kind = CodeKind::from_u8(kind_buf[0])?;
+/// The stream routing byte has already been consumed by the caller.
+pub async fn recv_scan_with_kind(
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    kind_byte: u8,
+) -> Result<ScanResult> {
+    let kind = CodeKind::from_u8(kind_byte)?;
 
     // Read code
     let mut len_buf = [0u8; 4];
@@ -129,6 +137,110 @@ pub async fn recv_scan(send: &mut SendStream, recv: &mut RecvStream) -> Result<S
         image_jpeg,
         extracted_card,
     })
+}
+
+/// Receiver side: read a scan result from an accepted bidi stream.
+/// Reads the routing byte itself; prefer `recv_scan_with_kind` when dispatching.
+pub async fn recv_scan(send: &mut SendStream, recv: &mut RecvStream) -> Result<ScanResult> {
+    let mut kind_buf = [0u8; 1];
+    recv.read_exact(&mut kind_buf).await.context("read kind")?;
+    recv_scan_with_kind(send, recv, kind_buf[0]).await
+}
+
+/// Phone side: send a sync poll and receive the checked state for each code.
+/// Opens a new bidi stream, sends the list of codes, and returns
+/// `(code, is_checked_on_receiver)` for every code in the same order.
+pub async fn send_sync_poll(conn: &Connection, codes: &[String]) -> Result<Vec<(String, bool)>> {
+    let (mut send, mut recv) = conn.open_bi().await.context("open sync bidi stream")?;
+
+    // Routing byte
+    send.write_all(&[SYNC_POLL]).await?;
+
+    // Number of codes
+    send.write_all(&(codes.len() as u32).to_be_bytes()).await?;
+
+    // Each code
+    for code in codes {
+        let b = code.as_bytes();
+        send.write_all(&(b.len() as u32).to_be_bytes()).await?;
+        send.write_all(b).await?;
+    }
+    send.finish()?;
+
+    // Read response
+    let mut n_buf = [0u8; 4];
+    recv.read_exact(&mut n_buf).await.context("read response count")?;
+    let n = u32::from_be_bytes(n_buf) as usize;
+    if n > 10_000 {
+        bail!("sync response too large: {n}");
+    }
+
+    let mut results = Vec::with_capacity(n);
+    for _ in 0..n {
+        let mut len_buf = [0u8; 4];
+        recv.read_exact(&mut len_buf).await.context("read response code len")?;
+        let code_len = u32::from_be_bytes(len_buf) as usize;
+        if code_len > 10_000 {
+            bail!("response code too large: {code_len}");
+        }
+        let mut code_buf = vec![0u8; code_len];
+        recv.read_exact(&mut code_buf).await.context("read response code")?;
+        let code = String::from_utf8(code_buf).context("response code not utf8")?;
+        let mut checked_buf = [0u8; 1];
+        recv.read_exact(&mut checked_buf).await.context("read checked byte")?;
+        results.push((code, checked_buf[0] != 0));
+    }
+
+    Ok(results)
+}
+
+/// Receiver side: handle a sync poll stream.
+/// The routing byte (0x10) has already been consumed by the caller.
+/// Calls `lookup(code)` for each received code to determine its checked state,
+/// then writes the response and finishes the stream.
+pub async fn recv_sync_poll<F>(
+    send: &mut SendStream,
+    recv: &mut RecvStream,
+    lookup: F,
+) -> Result<()>
+where
+    F: Fn(&str) -> bool,
+{
+    // Read number of codes
+    let mut n_buf = [0u8; 4];
+    recv.read_exact(&mut n_buf).await.context("read poll count")?;
+    let n = u32::from_be_bytes(n_buf) as usize;
+    if n > 10_000 {
+        bail!("too many codes in sync poll: {n}");
+    }
+
+    // Read each code
+    let mut codes = Vec::with_capacity(n);
+    for _ in 0..n {
+        let mut len_buf = [0u8; 4];
+        recv.read_exact(&mut len_buf).await.context("read poll code len")?;
+        let code_len = u32::from_be_bytes(len_buf) as usize;
+        if code_len > 10_000 {
+            bail!("poll code too large: {code_len}");
+        }
+        let mut code_buf = vec![0u8; code_len];
+        recv.read_exact(&mut code_buf).await.context("read poll code")?;
+        let code = String::from_utf8(code_buf).context("poll code not utf8")?;
+        codes.push(code);
+    }
+
+    // Write response
+    send.write_all(&(codes.len() as u32).to_be_bytes()).await?;
+    for code in &codes {
+        let checked = lookup(code);
+        let b = code.as_bytes();
+        send.write_all(&(b.len() as u32).to_be_bytes()).await?;
+        send.write_all(b).await?;
+        send.write_all(&[checked as u8]).await?;
+    }
+    send.finish()?;
+
+    Ok(())
 }
 
 async fn read_ack(recv: &mut RecvStream) -> Result<u8> {

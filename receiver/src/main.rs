@@ -5,10 +5,36 @@ use iroh::{Endpoint, endpoint::presets};
 use iroh_tickets::{Ticket, endpoint::EndpointTicket};
 use qrcode::QrCode;
 use qrcode::render::svg;
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
 use tokio::sync::mpsc;
 use tracing::info;
 
 const ALPN: &[u8] = barcode_proto::ALPN;
+
+// ── Shared sync state ─────────────────────────────────────────────────
+//
+// Maps scanned code strings to their `hidden` (checked) state.
+// Written by the Dioxus UI whenever a scan arrives or a checkbox is toggled.
+// Read by the iroh task when answering sync polls from the phone.
+
+fn sync_state() -> &'static Mutex<HashMap<String, bool>> {
+    static STATE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn sync_state_set(code: &str, hidden: bool) {
+    if let Ok(mut map) = sync_state().lock() {
+        map.insert(code.to_string(), hidden);
+    }
+}
+
+fn sync_state_lookup(code: &str) -> bool {
+    sync_state()
+        .lock()
+        .map(|m| *m.get(code).unwrap_or(&false))
+        .unwrap_or(false)
+}
 
 // ── Shop configuration ───────────────────────────────────────────────
 
@@ -312,6 +338,7 @@ fn App() -> Element {
                     state.ticket_full.set((full_str, full_svg));
                 }
                 IrohEvent::Scan(entry) => {
+                    sync_state_set(&entry.code, false);
                     let idx = state.scans.read().len();
                     let detected = entry.detected_shops.clone();
                     state.scans.write().push(entry);
@@ -802,7 +829,10 @@ fn render_scan_row(mut state: AppState, i: usize, entry: &ScanEntry) -> Element 
                     checked: is_hidden,
                     onclick: move |e| {
                         e.stop_propagation();
-                        state.scans.write()[i].hidden = !is_hidden;
+                        let new_hidden = !is_hidden;
+                        let code = state.scans.read()[i].code.clone();
+                        sync_state_set(&code, new_hidden);
+                        state.scans.write()[i].hidden = new_hidden;
                     },
                 }
             }
@@ -960,34 +990,64 @@ async fn run_iroh(tx: mpsc::UnboundedSender<IrohEvent>) -> anyhow::Result<()> {
                     Ok(p) => p,
                     Err(_) => break,
                 };
-                match barcode_proto::recv_scan(&mut send, &mut recv).await {
-                    Ok(result) => {
-                        let image_b64 = if result.image_jpeg.is_empty() {
-                            String::new()
-                        } else {
-                            BASE64.encode(&result.image_jpeg)
-                        };
-                        let detected_shops = detect_shops(&result.code);
-                        let display_code = format_display_code(&result.code);
-                        let entry = ScanEntry {
-                            kind: result.kind.as_str().to_string(),
-                            code: result.code.clone(),
-                            extracted_card: result.extracted_card.clone(),
-                            image_b64,
-                            timestamp: format_timestamp(),
-                            detected_shops,
-                            hidden: false,
-                            display_code,
-                            manual_count: String::new(),
-                            card_value: String::new(),
-                        };
-                        let log_display = entry.extracted_card.as_ref().unwrap_or(&entry.code);
-                        info!("Scan: {} - {} (extracted: {})", entry.kind, entry.code, log_display);
-                        let _ = tx.send(IrohEvent::Scan(entry));
+
+                // Read the routing byte to distinguish scan streams from sync polls.
+                let mut type_buf = [0u8; 1];
+                if recv.read_exact(&mut type_buf).await.is_err() {
+                    continue;
+                }
+
+                match type_buf[0] {
+                    0x10 => {
+                        // Sync poll: phone asking for checked state of its codes.
+                        if let Err(e) = barcode_proto::recv_sync_poll(
+                            &mut send,
+                            &mut recv,
+                            sync_state_lookup,
+                        )
+                        .await
+                        {
+                            tracing::warn!("sync poll error: {e:#}");
+                        }
                     }
-                    Err(e) => {
-                        tracing::warn!("recv error: {e:#}");
-                        continue;
+                    kind_byte => {
+                        // Scan data stream (kind_byte is already the CodeKind byte).
+                        match barcode_proto::recv_scan_with_kind(&mut send, &mut recv, kind_byte)
+                            .await
+                        {
+                            Ok(result) => {
+                                let image_b64 = if result.image_jpeg.is_empty() {
+                                    String::new()
+                                } else {
+                                    BASE64.encode(&result.image_jpeg)
+                                };
+                                let detected_shops = detect_shops(&result.code);
+                                let display_code = format_display_code(&result.code);
+                                let entry = ScanEntry {
+                                    kind: result.kind.as_str().to_string(),
+                                    code: result.code.clone(),
+                                    extracted_card: result.extracted_card.clone(),
+                                    image_b64,
+                                    timestamp: format_timestamp(),
+                                    detected_shops,
+                                    hidden: false,
+                                    display_code,
+                                    manual_count: String::new(),
+                                    card_value: String::new(),
+                                };
+                                let log_display =
+                                    entry.extracted_card.as_ref().unwrap_or(&entry.code);
+                                info!(
+                                    "Scan: {} - {} (extracted: {})",
+                                    entry.kind, entry.code, log_display
+                                );
+                                let _ = tx.send(IrohEvent::Scan(entry));
+                            }
+                            Err(e) => {
+                                tracing::warn!("recv error: {e:#}");
+                                continue;
+                            }
+                        }
                     }
                 }
             }

@@ -30,6 +30,11 @@ private const val TAG = "BarcodeScanner"
 
 class MainActivity : AppCompatActivity() {
 
+    companion object {
+        // Exposed so ScanDetailActivity can check if a session is active for retry-send.
+        var activeSessionHandle: Long = 0L
+    }
+
     // BarcodeState is defined in the :shared KMP module (shared/src/commonMain/...)
     private var state = BarcodeState.IDLE
     private var isLocalMode = false
@@ -42,6 +47,8 @@ class MainActivity : AppCompatActivity() {
     private var lastRawDigits: String = ""
     private var sendJob: Job? = null
     private var countdownJob: Job? = null
+    private var currentScanId: String? = null
+    private lateinit var backgroundSyncManager: BackgroundSyncManager
 
     private lateinit var statusText: TextView
     private lateinit var rawCodeText: TextView
@@ -54,6 +61,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var jumpToScanButton: Button
     private lateinit var disconnectActionButton: Button
     private lateinit var cancelSendButton: Button
+    private lateinit var historyButton: Button
 
     // Launcher for scanning the EndpointTicket QR code
     private val ticketScanLauncher = registerForActivityResult(ScanContract()) { result ->
@@ -80,6 +88,9 @@ class MainActivity : AppCompatActivity() {
         jumpToScanButton = findViewById(R.id.jump_to_scan_button)
         disconnectActionButton = findViewById(R.id.disconnect_action_button)
         cancelSendButton = findViewById(R.id.cancel_send_button)
+        historyButton = findViewById(R.id.history_button)
+
+        backgroundSyncManager = BackgroundSyncManager(this, lifecycleScope) { sessionHandle }
 
         actionButton.setOnClickListener { onActionButtonClicked() }
         scanPhoneButton.setOnClickListener { onScanPhoneClicked() }
@@ -87,15 +98,26 @@ class MainActivity : AppCompatActivity() {
         disconnectActionButton.setOnClickListener { onDisconnect() }
         jumpToScanButton.setOnClickListener { onJumpToScan() }
         cancelSendButton.setOnClickListener { onBack() }
+        historyButton.setOnClickListener {
+            startActivity(Intent(this, ScanHistoryActivity::class.java))
+        }
 
         updateUI()
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Keep companion object in sync so ScanDetailActivity can access the active session.
+        activeSessionHandle = sessionHandle
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        backgroundSyncManager.stop()
         if (sessionHandle != 0L) {
             val handle = sessionHandle
             sessionHandle = 0L
+            activeSessionHandle = 0L
             lifecycleScope.launch(Dispatchers.IO) {
                 IrohBridge.disconnect(handle)
             }
@@ -175,7 +197,9 @@ class MainActivity : AppCompatActivity() {
                 withContext(Dispatchers.Main) {
                     if (handle != 0L) {
                         sessionHandle = handle
+                        activeSessionHandle = handle
                         state = BarcodeState.READY
+                        backgroundSyncManager.start()
                         Log.i(TAG, "Connected successfully")
                     } else {
                         state = BarcodeState.IDLE
@@ -222,6 +246,28 @@ class MainActivity : AppCompatActivity() {
         Log.i(TAG, "Image size: ${lastScannedImageJpeg?.size ?: 0} bytes")
 
         state = BarcodeState.SCANNED
+
+        // Save to history
+        val scanId = System.currentTimeMillis().toString()
+        currentScanId = scanId
+        val status = if (isLocalMode) SendStatus.LOCAL else SendStatus.PENDING
+        val imageFilename = if (lastScannedImageJpeg != null) "img_$scanId.jpg" else null
+        val entry = ScanEntry(
+            id = scanId,
+            timestamp = scanId.toLong(),
+            code = code,
+            format = format ?: "UNKNOWN",
+            rawDigits = lastRawDigits,
+            trimmedNumbers = lastTrimmedNumbers,
+            detectedShopNames = lastDetectedShops.map { it.name },
+            imageFilename = imageFilename,
+            sendStatus = status
+        )
+        val capturedJpeg = lastScannedImageJpeg
+        lifecycleScope.launch(Dispatchers.IO) {
+            ScanHistoryManager.addScan(this@MainActivity, entry, capturedJpeg)
+        }
+
         updateUI()
     }
 
@@ -274,11 +320,12 @@ class MainActivity : AppCompatActivity() {
         // Map zxing format name to our protocol kind
         val kind = if (format == "QR_CODE") 1 else 0
         val imageJpeg = lastScannedImageJpeg ?: ByteArray(0)
+        val scanId = currentScanId
 
         state = BarcodeState.SENDING
         updateUI()
 
-        val timeoutSecs = 15
+        val timeoutSecs = 5
         countdownJob = lifecycleScope.launch(Dispatchers.Main) {
             for (remaining in timeoutSecs downTo 1) {
                 statusText.text = "Sending... $remaining"
@@ -297,11 +344,20 @@ class MainActivity : AppCompatActivity() {
                         Log.i(TAG, "Scan sent successfully")
                         statusText.text = "Sent!"
                         state = BarcodeState.READY
+                        if (scanId != null) {
+                            lifecycleScope.launch(Dispatchers.IO) {
+                                ScanHistoryManager.updateStatus(this@MainActivity, scanId, SendStatus.SENT)
+                            }
+                        }
                     } else {
                         Log.e(TAG, "Failed to send scan (timeout or connection lost)")
-                        statusText.text = "Send failed — reconnect required"
-                        sessionHandle = 0L
-                        state = BarcodeState.IDLE
+                        state = BarcodeState.READY
+                        if (scanId != null) {
+                            lifecycleScope.launch(Dispatchers.IO) {
+                                ScanHistoryManager.updateStatus(this@MainActivity, scanId, SendStatus.FAILED)
+                            }
+                        }
+                        Toast.makeText(this@MainActivity, "Couldn't reach receiver — saved to history", Toast.LENGTH_SHORT).show()
                     }
                     updateUI()
                 }
@@ -311,9 +367,13 @@ class MainActivity : AppCompatActivity() {
                     countdownJob?.cancel()
                     countdownJob = null
                     if (state != BarcodeState.SENDING) return@withContext
-                    statusText.text = "Send error — reconnect required"
-                    sessionHandle = 0L
-                    state = BarcodeState.IDLE
+                    state = BarcodeState.READY
+                    if (scanId != null) {
+                        lifecycleScope.launch(Dispatchers.IO) {
+                            ScanHistoryManager.updateStatus(this@MainActivity, scanId, SendStatus.FAILED)
+                        }
+                    }
+                    Toast.makeText(this@MainActivity, "Couldn't reach receiver — saved to history", Toast.LENGTH_SHORT).show()
                     updateUI()
                 }
             }
@@ -331,6 +391,7 @@ class MainActivity : AppCompatActivity() {
         lastTrimmedNumbers = emptyList()
         lastDetectedShops = emptyList()
         isLocalMode = false
+        currentScanId = null
         state = BarcodeState.IDLE
         Log.i(TAG, "Back to home (session kept)")
         updateUI()
@@ -340,9 +401,11 @@ class MainActivity : AppCompatActivity() {
         countdownJob?.cancel(); countdownJob = null
         sendJob?.cancel()
         sendJob = null
+        backgroundSyncManager.stop()
         val handle = sessionHandle
         if (handle != 0L) {
             sessionHandle = 0L
+            activeSessionHandle = 0L
             lifecycleScope.launch(Dispatchers.IO) {
                 IrohBridge.disconnect(handle)
             }
@@ -354,6 +417,7 @@ class MainActivity : AppCompatActivity() {
         lastTrimmedNumbers = emptyList()
         lastDetectedShops = emptyList()
         isLocalMode = false
+        currentScanId = null
         state = BarcodeState.IDLE
         Log.i(TAG, "Disconnected")
         updateUI()
@@ -469,6 +533,9 @@ class MainActivity : AppCompatActivity() {
         val showBack = state == BarcodeState.READY || state == BarcodeState.SCANNED
         disconnectButton.visibility = if (showBack) android.view.View.VISIBLE else android.view.View.GONE
         disconnectActionButton.visibility = if (showBack) android.view.View.VISIBLE else android.view.View.GONE
+
+        // History button always visible
+        historyButton.visibility = android.view.View.VISIBLE
 
         // Raw code, copy buttons, and shop links only in SCANNED state
         rawCodeText.visibility = android.view.View.GONE

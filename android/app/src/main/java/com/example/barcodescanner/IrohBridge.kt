@@ -40,4 +40,15 @@ object IrohBridge {
      * The handle must not be used after this call.
      */
     external fun disconnect(handle: Long)
+
+    /**
+     * Sends a sync poll to the receiver and returns the checked state for each code.
+     *
+     * [codesNl] is a newline-separated list of scanned code strings.
+     *
+     * Returns a newline-separated list of "code\u001fchecked" pairs where
+     * checked is "1" (checked on receiver) or "0". Returns an empty string
+     * if the poll fails or the connection is not available.
+     */
+    external fun syncCheckedState(handle: Long, codesNl: String): String
 }

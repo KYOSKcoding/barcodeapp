@@ -82,6 +82,16 @@
             android:layout_marginTop="8dp" />
 
         <Button
+            android:id="@+id/history_button"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Scan History"
+            android:textSize="18sp"
+            android:paddingStart="24dp"
+            android:paddingEnd="24dp"
+            android:layout_marginTop="8dp" />
+
+        <Button
             android:id="@+id/jump_to_scan_button"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
