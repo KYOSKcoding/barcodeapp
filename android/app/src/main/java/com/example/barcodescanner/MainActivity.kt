@@ -90,6 +90,9 @@ class MainActivity : AppCompatActivity() {
         cancelSendButton = findViewById(R.id.cancel_send_button)
         historyButton = findViewById(R.id.history_button)
 
+        // Clear history from the previous session — it will be re-synced from the receiver on connect.
+        ScanHistoryManager.clearAll(this)
+
         backgroundSyncManager = BackgroundSyncManager(this, lifecycleScope) { sessionHandle }
 
         actionButton.setOnClickListener { onActionButtonClicked() }

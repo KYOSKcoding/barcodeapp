@@ -12,6 +12,10 @@
 //!     Phone finishes send side
 //!     Receiver replies: num_entries(u32 BE) | [code_len(u32 BE) | code(bytes) | checked(u8)]*
 //!     Receiver finishes send side
+//!   0x12 — sync all stream
+//!     Phone sends: 0x12, then finishes send side
+//!     Receiver replies: num_entries(u32 BE) | [code_len(u32 BE) | code(bytes) | kind(u8) | checked(u8)]*
+//!     Receiver finishes send side
 
 use anyhow::{Context, Result, bail};
 use iroh::endpoint::{Connection, RecvStream, SendStream};
@@ -54,6 +58,7 @@ pub struct ScanResult {
 
 const ACK: u8 = 0x01;
 const SYNC_POLL: u8 = 0x10;
+const SYNC_ALL: u8 = 0x12;
 
 /// Scanner side: send a scan result over a bidi stream.
 pub async fn send_scan(conn: &Connection, result: &ScanResult) -> Result<()> {
@@ -240,6 +245,69 @@ where
     }
     send.finish()?;
 
+    Ok(())
+}
+
+/// Phone side: request all codes known to the receiver.
+/// Opens a new bidi stream, sends routing byte 0x12, and returns
+/// `(code, kind, is_checked)` for every entry the receiver has seen.
+pub async fn send_sync_all(conn: &Connection) -> Result<Vec<(String, CodeKind, bool)>> {
+    let (mut send, mut recv) = conn.open_bi().await.context("open sync-all bidi stream")?;
+
+    // Routing byte only — no payload
+    send.write_all(&[SYNC_ALL]).await?;
+    send.finish()?;
+
+    // Read response
+    let mut n_buf = [0u8; 4];
+    recv.read_exact(&mut n_buf).await.context("read sync-all count")?;
+    let n = u32::from_be_bytes(n_buf) as usize;
+    if n > 10_000 {
+        bail!("sync-all response too large: {n}");
+    }
+
+    let mut results = Vec::with_capacity(n);
+    for _ in 0..n {
+        let mut len_buf = [0u8; 4];
+        recv.read_exact(&mut len_buf).await.context("read sync-all code len")?;
+        let code_len = u32::from_be_bytes(len_buf) as usize;
+        if code_len > 10_000 {
+            bail!("sync-all code too large: {code_len}");
+        }
+        let mut code_buf = vec![0u8; code_len];
+        recv.read_exact(&mut code_buf).await.context("read sync-all code")?;
+        let code = String::from_utf8(code_buf).context("sync-all code not utf8")?;
+        let mut kind_buf = [0u8; 1];
+        recv.read_exact(&mut kind_buf).await.context("read sync-all kind")?;
+        let kind = CodeKind::from_u8(kind_buf[0])?;
+        let mut checked_buf = [0u8; 1];
+        recv.read_exact(&mut checked_buf).await.context("read sync-all checked")?;
+        results.push((code, kind, checked_buf[0] != 0));
+    }
+
+    Ok(results)
+}
+
+/// Receiver side: handle a sync-all stream.
+/// The routing byte (0x12) has already been consumed by the caller.
+/// `entries` is a slice of `(code, kind_byte)` for every scan the receiver has seen.
+/// `lookup_checked` returns true if a code is currently checked (hidden).
+pub async fn recv_sync_all(
+    send: &mut SendStream,
+    _recv: &mut RecvStream,
+    entries: &[(String, u8)],
+    lookup_checked: impl Fn(&str) -> bool,
+) -> Result<()> {
+    send.write_all(&(entries.len() as u32).to_be_bytes()).await?;
+    for (code, kind_byte) in entries {
+        let checked = lookup_checked(code);
+        let b = code.as_bytes();
+        send.write_all(&(b.len() as u32).to_be_bytes()).await?;
+        send.write_all(b).await?;
+        send.write_all(&[*kind_byte]).await?;
+        send.write_all(&[checked as u8]).await?;
+    }
+    send.finish()?;
     Ok(())
 }
 

@@ -87,6 +87,16 @@ object ScanHistoryManager {
         return entries.sortedByDescending { it.timestamp }
     }
 
+    fun clearAll(context: Context) {
+        val dir = scansDir(context)
+        try {
+            dir.listFiles()?.forEach { it.delete() }
+        } catch (e: Exception) {
+            Log.w(TAG, "clearAll: failed to delete files", e)
+        }
+        writeIndex(context, JSONArray())
+    }
+
     fun deleteEntry(context: Context, id: String) {
         val dir = scansDir(context)
         val index = loadIndex(context)

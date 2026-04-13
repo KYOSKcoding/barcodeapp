@@ -36,6 +36,22 @@ fn sync_state_lookup(code: &str) -> bool {
         .unwrap_or(false)
 }
 
+// ── All-codes list for SYNC_ALL ───────────────────────────────────────
+//
+// Stores (code, kind_byte) for every scan received, in arrival order.
+// Written by the iroh task; read by the same task when handling 0x12 streams.
+
+fn sync_all_list() -> &'static Mutex<Vec<(String, u8)>> {
+    static LIST: OnceLock<Mutex<Vec<(String, u8)>>> = OnceLock::new();
+    LIST.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+fn sync_all_push(code: &str, kind_byte: u8) {
+    if let Ok(mut list) = sync_all_list().lock() {
+        list.push((code.to_string(), kind_byte));
+    }
+}
+
 // ── Shop configuration ───────────────────────────────────────────────
 
 #[derive(Clone, Debug)]
@@ -119,8 +135,7 @@ struct ScanEntry {
     detected_shops: Vec<&'static str>,
     hidden: bool,
     display_code: String,  // Formatted code for UI display (shop-specific formatting applied)
-    manual_count: String,  // user-editable count override (max 3 chars)
-    card_value: String,    // user-editable card value in €
+    manual_count: String,  // user-editable sort number
 }
 
 enum IrohEvent {
@@ -485,7 +500,6 @@ fn DetailPanel() -> Element {
         n if n > 1 => "shop-detect ambiguous",
         _ => "shop-detect none",
     };
-    let detected_for_all = detected.clone();
     drop(scans);
 
     rsx! {
@@ -739,13 +753,26 @@ fn ImageViewer() -> Element {
     }
 }
 
+// ── Helpers ──────────────────────────────────────────────────────────
+
+/// Compare two manual-count strings numerically.
+/// Rows with a valid integer come first (ascending); empty/non-numeric go last.
+fn cmp_manual_count(a: &str, b: &str) -> std::cmp::Ordering {
+    match (a.trim().parse::<i32>(), b.trim().parse::<i32>()) {
+        (Ok(na), Ok(nb)) => na.cmp(&nb),
+        (Ok(_), Err(_)) => std::cmp::Ordering::Less,
+        (Err(_), Ok(_)) => std::cmp::Ordering::Greater,
+        (Err(_), Err(_)) => std::cmp::Ordering::Equal,
+    }
+}
+
 // ── Scan table ───────────────────────────────────────────────────────
 
 #[component]
 fn ScanTable() -> Element {
     let state = use_context::<AppState>();
     let show_hidden = (state.show_hidden)();
-    let entries: Vec<(usize, ScanEntry)> = state
+    let mut entries: Vec<(usize, ScanEntry)> = state
         .scans
         .read()
         .iter()
@@ -754,16 +781,27 @@ fn ScanTable() -> Element {
         .map(|(i, e)| (i, e.clone()))
         .collect();
 
+    // Sort: unchecked rows by manual # (numeric ascending, unnumbered last),
+    // checked rows at the bottom sorted by their # as well.
+    entries.sort_by(|(_, a), (_, b)| {
+        match (a.hidden, b.hidden) {
+            (false, true) => std::cmp::Ordering::Less,
+            (true, false) => std::cmp::Ordering::Greater,
+            _ => cmp_manual_count(&a.manual_count, &b.manual_count),
+        }
+    });
+
     // Always render the table headers so layout is stable before the first scan.
-    // Use early-return for the empty state to avoid colspan type issues and
-    // if/else-inside-RSX fragility with the for loop.
     if entries.is_empty() {
         return rsx! {
             table {
                 thead { tr {
                     th { class: "check-col", "" }
-                    th { "#" } th { "€" } th { "Value €" } th { "Code" }
-                    th { "Full code" } th { "Shop" } th { "Img" } th { "Time" }
+                    th { "#" }
+                    th { "Code" }
+                    th { "Shop" }
+                    th { "Img" }
+                    th { "Time" }
                 }}
                 tbody {
                     tr {
@@ -781,11 +819,14 @@ fn ScanTable() -> Element {
         table {
             thead { tr {
                 th { class: "check-col", "" }
-                th { "#" } th { "€" } th { "Value €" } th { "Code" }
-                th { "Full code" } th { "Shop" } th { "Img" } th { "Time" }
+                th { "#" }
+                th { "Code" }
+                th { "Shop" }
+                th { "Img" }
+                th { "Time" }
             }}
             tbody {
-                for (i, entry) in entries.into_iter().rev() {
+                for (i, entry) in entries {
                     { render_scan_row(state, i, &entry) }
                 }
             }
@@ -813,7 +854,7 @@ fn render_scan_row(mut state: AppState, i: usize, entry: &ScanEntry) -> Element 
         entry.detected_shops.join("/")
     };
     rsx! {
-        tr { class: "{row_cls}", style: "cursor:pointer;",
+        tr { key: "{i}", class: "{row_cls}", style: "cursor:pointer;",
             onclick: move |_| {
                 state.selected_scan.set(Some(i));
                 let shops = &state.scans.read()[i].detected_shops;
@@ -839,12 +880,11 @@ fn render_scan_row(mut state: AppState, i: usize, entry: &ScanEntry) -> Element 
             td {
                 {
                     let mc = entry.manual_count.clone();
-                    let placeholder = "-".to_string();
                     rsx! {
                         input {
                             r#type: "text",
                             value: "{mc}",
-                            placeholder: "{placeholder}",
+                            placeholder: "-",
                             maxlength: "3",
                             style: "width:36px;background:transparent;border:none;border-bottom:1px solid #444;color:inherit;font-size:inherit;text-align:center;outline:none;",
                             onclick: move |e| e.stop_propagation(),
@@ -853,23 +893,6 @@ fn render_scan_row(mut state: AppState, i: usize, entry: &ScanEntry) -> Element 
                     }
                 }
             }
-            td {
-                {
-                    let cv = entry.card_value.clone();
-                    rsx! {
-                        input {
-                            r#type: "text",
-                            value: "{cv}",
-                            placeholder: "—",
-                            maxlength: "8",
-                            style: "width:52px;background:transparent;border:none;border-bottom:1px solid #444;color:inherit;font-size:inherit;text-align:right;outline:none;",
-                            onclick: move |e| e.stop_propagation(),
-                            oninput: move |e| { state.scans.write()[i].card_value = e.value(); }
-                        }
-                    }
-                }
-            }
-            td { "{entry.kind}" }
             td { style: "font-family:inherit;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;",
                 {
                     let dc = entry.display_code.clone();
@@ -883,24 +906,6 @@ fn render_scan_row(mut state: AppState, i: usize, entry: &ScanEntry) -> Element 
                             }
                         }
                     }
-                }
-            }
-            td { style: "font-family:monospace;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;",
-                if let Some(extracted) = entry.extracted_card.clone() {
-                    {
-                        let extracted_copy = extracted.clone();
-                        rsx! {
-                            div { style: "display:flex;align-items:center;gap:4px;",
-                                span { style: "color:green;font-weight:bold;", "{extracted}" }
-                                button { class: "btn btn-copy btn-sm",
-                                    onclick: move |e| { e.stop_propagation(); copy_to_clipboard(&extracted_copy); },
-                                    "Copy"
-                                }
-                            }
-                        }
-                    }
-                } else {
-                    span { style: "color:#999;", "--" }
                 }
             }
             td {
@@ -1010,6 +1015,23 @@ async fn run_iroh(tx: mpsc::UnboundedSender<IrohEvent>) -> anyhow::Result<()> {
                             tracing::warn!("sync poll error: {e:#}");
                         }
                     }
+                    0x12 => {
+                        // Sync all: phone asking for all scanned codes.
+                        let entries = sync_all_list()
+                            .lock()
+                            .map(|v| v.clone())
+                            .unwrap_or_default();
+                        if let Err(e) = barcode_proto::recv_sync_all(
+                            &mut send,
+                            &mut recv,
+                            &entries,
+                            sync_state_lookup,
+                        )
+                        .await
+                        {
+                            tracing::warn!("sync all error: {e:#}");
+                        }
+                    }
                     kind_byte => {
                         // Scan data stream (kind_byte is already the CodeKind byte).
                         match barcode_proto::recv_scan_with_kind(&mut send, &mut recv, kind_byte)
@@ -1033,8 +1055,8 @@ async fn run_iroh(tx: mpsc::UnboundedSender<IrohEvent>) -> anyhow::Result<()> {
                                     hidden: false,
                                     display_code,
                                     manual_count: String::new(),
-                                    card_value: String::new(),
                                 };
+                                sync_all_push(&result.code, result.kind as u8);
                                 let log_display =
                                     entry.extracted_card.as_ref().unwrap_or(&entry.code);
                                 info!(

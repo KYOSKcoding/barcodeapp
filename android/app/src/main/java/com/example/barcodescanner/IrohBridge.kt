@@ -30,6 +30,15 @@ object IrohBridge {
     external fun sendScan(handle: Long, kind: Int, code: String, imageJpeg: ByteArray): Boolean
 
     /**
+     * Fetches all codes known to the receiver along with their kind and checked state.
+     *
+     * Returns a newline-separated list of "code\u001fkind_byte\u001fchecked" triples
+     * where kind_byte is "0" (Barcode) or "1" (QR Code) and checked is "0" or "1".
+     * Returns empty string on failure.
+     */
+    external fun syncAll(handle: Long): String
+
+    /**
      * Returns true if the connection is still alive.
      */
     external fun isConnected(handle: Long): Boolean

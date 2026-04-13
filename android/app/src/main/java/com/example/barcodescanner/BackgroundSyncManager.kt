@@ -33,7 +33,9 @@ class BackgroundSyncManager(
     fun start() {
         job?.cancel()
         job = scope.launch(Dispatchers.IO) {
-            // Initial checked-state sync right after connect.
+            // Pull all codes from the receiver and populate local history.
+            syncAllFromReceiver()
+            // Then sync checked states for whatever ended up in history.
             syncCheckedState()
 
             var ticksSinceSync = 0
@@ -54,6 +56,65 @@ class BackgroundSyncManager(
         job?.cancel()
         job = null
         ScanHistoryManager.clearCheckedStates()
+    }
+
+    // ── Sync all codes from receiver on connect ───────────────────────
+
+    private suspend fun syncAllFromReceiver() {
+        val handle = getHandle()
+        if (handle == 0L) return
+
+        val raw = try {
+            IrohBridge.syncAll(handle)
+        } catch (e: Exception) {
+            Log.w(TAG, "syncAll JNI error", e)
+            return
+        }
+
+        if (raw.isNullOrEmpty()) return
+
+        val lines = raw.lines().filter { it.isNotEmpty() }
+        if (lines.isEmpty()) return
+
+        val now = System.currentTimeMillis()
+        val total = lines.size
+        val checkedMap = mutableMapOf<String, Boolean>()
+
+        lines.forEachIndexed { idx, line ->
+            val parts = line.split('\u001F')
+            if (parts.size < 3) return@forEachIndexed
+
+            val code = parts[0]
+            val kindByte = parts[1].toIntOrNull() ?: 0
+            val checked = parts[2] == "1"
+
+            checkedMap[code] = checked
+
+            val format = if (kindByte == 1) "QR_CODE" else "BARCODE"
+            val rawDigits = code.filter { it.isDigit() }
+            val trimmedNumbers = extractCardNumbers(code)
+            val detectedShops = detectShops(code).map { it.name }
+            // Assign timestamps so oldest entry (idx=0) is earliest; newest is closest to now.
+            val timestamp = now - (total - 1 - idx) * 1_000L
+
+            val entry = ScanEntry(
+                id = "${now}_${idx}",
+                timestamp = timestamp,
+                code = code,
+                format = format,
+                rawDigits = rawDigits,
+                trimmedNumbers = trimmedNumbers,
+                detectedShopNames = detectedShops,
+                imageFilename = null,
+                sendStatus = SendStatus.SENT
+            )
+            ScanHistoryManager.addScan(context, entry, null)
+        }
+
+        Log.d(TAG, "Synced ${lines.size} entries from receiver")
+        if (checkedMap.isNotEmpty()) {
+            ScanHistoryManager.updateCheckedStates(checkedMap)
+        }
     }
 
     // ── Retry pending/failed scans ────────────────────────────────────

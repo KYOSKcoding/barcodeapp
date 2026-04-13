@@ -290,6 +290,55 @@ pub extern "system" fn Java_com_example_barcodescanner_IrohBridge_syncCheckedSta
         .unwrap_or(std::ptr::null_mut())
 }
 
+/// Fetch all codes (and their checked state) from the receiver.
+/// Returns a newline-separated list of "code\x1fkind_byte\x1fchecked" triples,
+/// where kind_byte is "0" (Barcode) or "1" (QR Code) and checked is "0" or "1".
+/// Returns empty string on error or empty receiver.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_com_example_barcodescanner_IrohBridge_syncAll(
+    mut env: JNIEnv,
+    _class: JClass,
+    handle: jlong,
+) -> jni::sys::jstring {
+    if handle == 0 {
+        return env.new_string("").map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+    }
+
+    let session = unsafe { SessionHandle::from_raw(handle) };
+
+    let result = runtime().block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            barcode_proto::send_sync_all(&session.connection),
+        )
+        .await
+    });
+
+    let entries = match result {
+        Ok(Ok(entries)) => entries,
+        Ok(Err(e)) => {
+            tracing::warn!("sync all failed: {e:#}");
+            return env.new_string("").map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+        }
+        Err(_) => {
+            tracing::warn!("sync all timed out");
+            return env.new_string("").map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut());
+        }
+    };
+
+    let result_str: String = entries
+        .iter()
+        .map(|(code, kind, checked)| {
+            format!("{}\x1f{}\x1f{}", code, *kind as u8, if *checked { "1" } else { "0" })
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    env.new_string(result_str)
+        .map(|s| s.into_raw())
+        .unwrap_or(std::ptr::null_mut())
+}
+
 /// Check if the connection is still alive.
 #[unsafe(no_mangle)]
 pub extern "system" fn Java_com_example_barcodescanner_IrohBridge_isConnected(
