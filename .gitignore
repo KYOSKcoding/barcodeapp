@@ -8,6 +8,8 @@ android/build/
 android/.gradle/
 android/app/src/main/jniLibs/
 android/local.properties
+shared/build/
+shared/.gradle/
 
 # IDE
 .idea/

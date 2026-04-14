@@ -3,7 +3,9 @@ package com.example.barcodescanner
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.Intent
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.graphics.Color
 import android.os.Bundle
 import android.util.Log
@@ -36,6 +38,7 @@ class ScanDetailActivity : AppCompatActivity() {
     private lateinit var codeText: TextView
     private lateinit var rawCodeText: TextView
     private lateinit var copyButtonsContainer: LinearLayout
+    private lateinit var shopLinksContainer: LinearLayout
     private lateinit var sendButton: Button
     private lateinit var sendStatusText: TextView
 
@@ -56,6 +59,7 @@ class ScanDetailActivity : AppCompatActivity() {
         codeText = findViewById(R.id.detail_code_text)
         rawCodeText = findViewById(R.id.detail_raw_code_text)
         copyButtonsContainer = findViewById(R.id.detail_copy_buttons_container)
+        shopLinksContainer = findViewById(R.id.detail_shop_links_container)
         sendButton = findViewById(R.id.detail_send_button)
         sendStatusText = findViewById(R.id.detail_send_status_text)
 
@@ -144,6 +148,9 @@ class ScanDetailActivity : AppCompatActivity() {
         // Copy buttons
         buildCopyButtons(e)
 
+        // Shop links
+        buildShopButtons(e)
+
         // Send button — show if not sent and a session is active
         val canSend = e.sendStatus != SendStatus.SENT &&
                 e.sendStatus != SendStatus.LOCAL &&
@@ -209,6 +216,25 @@ class ScanDetailActivity : AppCompatActivity() {
                 }
                 copyButtonsContainer.addView(btn)
             }
+        }
+    }
+
+    private fun buildShopButtons(e: ScanEntry) {
+        shopLinksContainer.removeAllViews()
+        val shops = detectShops(e.code)
+        if (shops.isEmpty()) {
+            shopLinksContainer.visibility = View.GONE
+            return
+        }
+        shopLinksContainer.visibility = View.VISIBLE
+        for (shop in shops) {
+            val btn = Button(this).apply {
+                text = "Open ${shop.name}"
+                setOnClickListener {
+                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(shop.url)))
+                }
+            }
+            shopLinksContainer.addView(btn)
         }
     }
 

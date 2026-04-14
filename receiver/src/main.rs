@@ -135,7 +135,9 @@ struct ScanEntry {
     detected_shops: Vec<&'static str>,
     hidden: bool,
     display_code: String,  // Formatted code for UI display (shop-specific formatting applied)
-    manual_count: String,  // user-editable sort number
+    manual_count: String,  // user-editable sort number (live input value)
+    sort_count: String,    // committed sort key — updated on blur/Enter only
+    card_value: String,    // user-editable value note
 }
 
 enum IrohEvent {
@@ -297,6 +299,7 @@ struct AppState {
     selected_shop: Signal<Option<String>>,
     copy_feedback: Signal<Option<&'static str>>,
     show_hidden: Signal<bool>,
+    confirm_delete: Signal<Option<usize>>,
     // TODO: restore once dioxus desktop supports iframe navigation to external URLs
     // see: https://github.com/DioxusLabs/dioxus/issues/3086
     // blocked by hardcoded with_navigation_handler in dioxus-desktop/src/webview.rs
@@ -321,6 +324,7 @@ fn App() -> Element {
         selected_shop: use_signal(|| None),
         copy_feedback: use_signal(|| None),
         show_hidden: use_signal(|| false),
+        confirm_delete: use_signal(|| None),
     };
     use_context_provider(|| state);
 
@@ -373,9 +377,77 @@ fn App() -> Element {
         Header {}
         div { class: "status", "{state.status_msg}" }
         QrOverlay {}
+        DeleteConfirmOverlay {}
         div { class: "content",
             DetailPanel {}
             ScanTable {}
+        }
+    }
+}
+
+// ── Delete confirmation overlay ──────────────────────────────────────
+
+#[component]
+fn DeleteConfirmOverlay() -> Element {
+    let mut state = use_context::<AppState>();
+    let idx = match (state.confirm_delete)() {
+        Some(i) => i,
+        None => return rsx! {},
+    };
+    let scans = state.scans.read();
+    let entry = match scans.get(idx) {
+        Some(e) => e,
+        None => {
+            drop(scans);
+            state.confirm_delete.set(None);
+            return rsx! {};
+        }
+    };
+    let display = entry.display_code.clone();
+    drop(scans);
+
+    rsx! {
+        div { class: "overlay",
+            onclick: move |_| state.confirm_delete.set(None),
+            div { class: "overlay-content", onclick: move |e| e.stop_propagation(),
+                h2 { style: "margin-bottom:8px;font-size:16px;color:#ff2d6b;letter-spacing:2px;", "DELETE SCAN?" }
+                p { style: "font-family:monospace;font-size:12px;color:#888;margin-bottom:20px;word-break:break-all;", "{display}" }
+                div { style: "display:flex;gap:10px;justify-content:center;",
+                    button { class: "btn btn-orange",
+                        onclick: move |_| {
+                            let code = {
+                                let s = state.scans.read();
+                                s.get(idx).map(|e| e.code.clone())
+                            };
+                            state.scans.write().remove(idx);
+                            if let Some(code) = code {
+                                if let Ok(mut list) = sync_all_list().lock() {
+                                    if let Some(pos) = list.iter().position(|(c, _)| c == &code) {
+                                        list.remove(pos);
+                                    }
+                                }
+                                if let Ok(mut map) = sync_state().lock() {
+                                    map.remove(&code);
+                                }
+                            }
+                            // Keep selected_scan index valid
+                            if let Some(sel) = (state.selected_scan)() {
+                                if sel == idx {
+                                    state.selected_scan.set(None);
+                                } else if sel > idx {
+                                    state.selected_scan.set(Some(sel - 1));
+                                }
+                            }
+                            state.confirm_delete.set(None);
+                        },
+                        "Delete"
+                    }
+                    button { class: "btn",
+                        onclick: move |_| state.confirm_delete.set(None),
+                        "Cancel"
+                    }
+                }
+            }
         }
     }
 }
@@ -787,7 +859,7 @@ fn ScanTable() -> Element {
         match (a.hidden, b.hidden) {
             (false, true) => std::cmp::Ordering::Less,
             (true, false) => std::cmp::Ordering::Greater,
-            _ => cmp_manual_count(&a.manual_count, &b.manual_count),
+            _ => cmp_manual_count(&a.sort_count, &b.sort_count),
         }
     });
 
@@ -798,6 +870,7 @@ fn ScanTable() -> Element {
                 thead { tr {
                     th { class: "check-col", "" }
                     th { "#" }
+                    th { "Value" }
                     th { "Code" }
                     th { "Shop" }
                     th { "Img" }
@@ -864,6 +937,10 @@ fn render_scan_row(mut state: AppState, i: usize, entry: &ScanEntry) -> Element 
                     state.selected_shop.set(None);
                 }
             },
+            oncontextmenu: move |e| {
+                e.prevent_default();
+                state.confirm_delete.set(Some(i));
+            },
             td { class: "check-col",
                 input {
                     r#type: "checkbox",
@@ -888,7 +965,37 @@ fn render_scan_row(mut state: AppState, i: usize, entry: &ScanEntry) -> Element 
                             maxlength: "3",
                             style: "width:36px;background:transparent;border:none;border-bottom:1px solid #444;color:inherit;font-size:inherit;text-align:center;outline:none;",
                             onclick: move |e| e.stop_propagation(),
-                            oninput: move |e| { state.scans.write()[i].manual_count = e.value(); }
+                            oninput: move |e| {
+                                // Update displayed value immediately but don't re-sort yet.
+                                state.scans.write()[i].manual_count = e.value();
+                            },
+                            onblur: move |_| {
+                                // Commit sort key when focus leaves the field.
+                                let val = { state.scans.read()[i].manual_count.clone() };
+                                state.scans.write()[i].sort_count = val;
+                            },
+                            onkeydown: move |e| {
+                                if e.key().to_string() == "Enter" {
+                                    let val = { state.scans.read()[i].manual_count.clone() };
+                                    state.scans.write()[i].sort_count = val;
+                                }
+                            },
+                        }
+                    }
+                }
+            }
+            td {
+                {
+                    let cv = entry.card_value.clone();
+                    rsx! {
+                        input {
+                            r#type: "text",
+                            value: "{cv}",
+                            placeholder: "—",
+                            maxlength: "8",
+                            style: "width:52px;background:transparent;border:none;border-bottom:1px solid #444;color:inherit;font-size:inherit;text-align:right;outline:none;",
+                            onclick: move |e| e.stop_propagation(),
+                            oninput: move |e| { state.scans.write()[i].card_value = e.value(); }
                         }
                     }
                 }
@@ -1055,6 +1162,8 @@ async fn run_iroh(tx: mpsc::UnboundedSender<IrohEvent>) -> anyhow::Result<()> {
                                     hidden: false,
                                     display_code,
                                     manual_count: String::new(),
+                                    sort_count: String::new(),
+                                    card_value: String::new(),
                                 };
                                 sync_all_push(&result.code, result.kind as u8);
                                 let log_display =

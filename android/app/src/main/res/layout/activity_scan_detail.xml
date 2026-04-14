@@ -73,6 +73,14 @@
             android:layout_marginTop="8dp"
             android:visibility="gone" />
 
+        <LinearLayout
+            android:id="@+id/detail_shop_links_container"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:layout_marginTop="4dp"
+            android:visibility="gone" />
+
         <Button
             android:id="@+id/detail_send_button"
             android:layout_width="match_parent"
