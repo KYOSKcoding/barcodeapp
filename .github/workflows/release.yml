@@ -3,6 +3,7 @@ name: Build & Release
 on:
   push:
     branches: [main]
+    tags: ["v*"]
 
 permissions:
   contents: write
@@ -18,18 +19,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Create or update rolling release
+      - name: Create release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Delete existing release (if any) so we can recreate fresh
-          gh release delete latest --yes 2>/dev/null || true
-          git tag -f latest
-          git push origin latest --force
-          gh release create latest \
-            --title "Latest Build" \
-            --notes "Rolling release -- automatically updated on every push to \`main\`.\n\n**Barcode Scanner** (Android APK, arm64)\n**Barcode Receiver** (Linux AppImage, x86_64)\n\nAssets appear as each build completes." \
-            --latest
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            # Versioned release — tag name becomes the release name
+            TAG="${GITHUB_REF_NAME}"
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --notes "**Barcode Scanner** (Android APK, arm64)\n**Barcode Receiver** (Linux AppImage, x86_64)\n\nAssets appear as each build completes." \
+              --latest
+          else
+            # Rolling release on main
+            gh release delete latest --yes 2>/dev/null || true
+            git tag -f latest
+            git push origin latest --force
+            gh release create latest \
+              --title "Latest Build" \
+              --notes "Rolling release — updated on every push to \`main\`.\n\n**Barcode Scanner** (Android APK, arm64)\n**Barcode Receiver** (Linux AppImage, x86_64)\n\nAssets appear as each build completes." \
+              --prerelease
+          fi
 
   # ── Build Android APK ───────────────────────────────────────────────
   build-apk:
@@ -91,7 +101,8 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cp android/app/build/outputs/apk/release/app-release.apk barcode-scanner.apk
-          gh release upload latest barcode-scanner.apk --clobber
+          RELEASE_TAG=$([[ "$GITHUB_REF" == refs/tags/v* ]] && echo "$GITHUB_REF_NAME" || echo "latest")
+          gh release upload "$RELEASE_TAG" barcode-scanner.apk --clobber
 
   # ── Build Dioxus Linux AppImage ─────────────────────────────────────
   build-linux:
@@ -171,4 +182,6 @@ jobs:
       - name: Upload AppImage to release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release upload latest barcode-receiver-x86_64.AppImage --clobber
+        run: |
+          RELEASE_TAG=$([[ "$GITHUB_REF" == refs/tags/v* ]] && echo "$GITHUB_REF_NAME" || echo "latest")
+          gh release upload "$RELEASE_TAG" barcode-receiver-x86_64.AppImage --clobber
