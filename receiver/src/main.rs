@@ -516,6 +516,11 @@ fn Header() -> Element {
                         span { style: "font-size:11px;color:{color};", title: "{status}",
                             "{dot} {status}"
                         }
+                        button { class: "btn btn-sm",
+                            title: "Reinitialize USB scanner (after plugging it in)",
+                            onclick: move |_| request_scanner_rescan(),
+                            "⟳"
+                        }
                     }
                 }
                 span { style: "font-size:11px;color:#555;",
@@ -1244,8 +1249,36 @@ fn format_timestamp() -> String {
 // grab() it, so the digits don't also leak into whatever window is focused.
 // Decoded scans are fed into the same `IrohEvent::Scan` channel the phone uses.
 
+/// Signal used by the UI "refresh" button to ask the scanner task to retry
+/// finding/grabbing the device (e.g. after plugging it in or replugging).
+#[cfg(target_os = "linux")]
+fn scanner_rescan() -> &'static tokio::sync::Notify {
+    static N: OnceLock<tokio::sync::Notify> = OnceLock::new();
+    N.get_or_init(tokio::sync::Notify::new)
+}
+
+/// Ask the USB scanner task to (re)initialize. No-op on non-Linux.
+fn request_scanner_rescan() {
+    #[cfg(target_os = "linux")]
+    scanner_rescan().notify_one();
+}
+
 #[cfg(target_os = "linux")]
 async fn run_usb_scanner(tx: mpsc::UnboundedSender<IrohEvent>) {
+    loop {
+        // Try to connect and read until the device is lost or unavailable.
+        usb_scanner_session(&tx).await;
+        // The session set an explanatory status; wait for a manual refresh.
+        scanner_rescan().notified().await;
+        let _ = tx.send(IrohEvent::ScannerStatus {
+            connected: false,
+            msg: "USB scanner: searching…".to_string(),
+        });
+    }
+}
+
+#[cfg(target_os = "linux")]
+async fn usb_scanner_session(tx: &mpsc::UnboundedSender<IrohEvent>) {
     use evdev::{Device, EventSummary, KeyCode};
 
     let status = |connected: bool, msg: String| {
@@ -1259,7 +1292,7 @@ async fn run_usb_scanner(tx: mpsc::UnboundedSender<IrohEvent>) {
             Ok(d) => (path.into(), d),
             Err(e) => {
                 tracing::warn!("USB scanner: cannot open {path}: {e}");
-                status(false, format!("USB scanner: cannot open {path} ({e})"));
+                status(false, format!("USB scanner: cannot open {path} ({e}) — tap ⟳"));
                 return;
             }
         },
@@ -1277,7 +1310,7 @@ async fn run_usb_scanner(tx: mpsc::UnboundedSender<IrohEvent>) {
                 }
                 None => {
                     info!("USB scanner: no scanner device found, USB input disabled");
-                    status(false, "USB scanner: not found".to_string());
+                    status(false, "USB scanner: not found — plug in, then tap ⟳".to_string());
                     return;
                 }
             }
@@ -1301,9 +1334,9 @@ async fn run_usb_scanner(tx: mpsc::UnboundedSender<IrohEvent>) {
                  Install receiver/99-barcode-scanner.rules and replug the scanner."
             );
             let msg = if perm {
-                "USB scanner: permission denied (install udev rule + replug)".to_string()
+                "USB scanner: permission denied (install udev rule), then tap ⟳".to_string()
             } else {
-                format!("USB scanner: read error ({e})")
+                format!("USB scanner: read error ({e}) — tap ⟳")
             };
             status(false, msg);
             return;
@@ -1319,7 +1352,7 @@ async fn run_usb_scanner(tx: mpsc::UnboundedSender<IrohEvent>) {
             Ok(ev) => ev,
             Err(e) => {
                 tracing::warn!("USB scanner: read error ({e}); stopping");
-                status(false, format!("USB scanner: disconnected ({e})"));
+                status(false, "USB scanner: disconnected — replug, then tap ⟳".to_string());
                 return;
             }
         };
