@@ -1,0 +1,12 @@
+# Honeywell Scanning and Mobility USB barcode scanner.
+# Makes the scanner's input device readable by the `plugdev` group (which the
+# desktop user is already a member of) so the receiver can read it directly,
+# without adding the user to the `input` group. Also tags it for a logind
+# uaccess ACL as a fallback where that mechanism works.
+#
+# Install:
+#   sudo cp receiver/99-barcode-scanner.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger --action=add --subsystem-match=input
+#   # (or simply unplug/replug the scanner)
+SUBSYSTEM=="input", ATTRS{idVendor}=="0c2e", ATTRS{idProduct}=="0200", MODE="0660", GROUP="plugdev", TAG+="uaccess"

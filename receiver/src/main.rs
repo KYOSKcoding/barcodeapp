@@ -149,6 +149,38 @@ enum IrohEvent {
         full_svg: String,
     },
     Scan(ScanEntry),
+    ScannerStatus { connected: bool, msg: String },
+}
+
+/// Build a `ScanEntry` from a decoded code, applying card extraction, shop
+/// detection and display formatting. Shared by the iroh receive path and the
+/// USB scanner task. `image_jpeg` is empty for sources without a photo (USB).
+fn build_scan_entry(
+    kind: barcode_proto::CodeKind,
+    code: String,
+    image_jpeg: &[u8],
+) -> ScanEntry {
+    let image_b64 = if image_jpeg.is_empty() {
+        String::new()
+    } else {
+        BASE64.encode(image_jpeg)
+    };
+    let extracted_card = barcode_proto::extract_card_number(kind, &code).ok();
+    let detected_shops = detect_shops(&code);
+    let display_code = format_display_code(&code);
+    ScanEntry {
+        kind: kind.as_str().to_string(),
+        code,
+        extracted_card,
+        image_b64,
+        timestamp: format_timestamp(),
+        detected_shops,
+        hidden: false,
+        display_code,
+        manual_count: String::new(),
+        sort_count: String::new(),
+        card_value: String::new(),
+    }
 }
 
 fn copy_to_clipboard(text: &str) {
@@ -300,6 +332,8 @@ struct AppState {
     copy_feedback: Signal<Option<&'static str>>,
     show_hidden: Signal<bool>,
     confirm_delete: Signal<Option<usize>>,
+    scanner_connected: Signal<bool>,
+    scanner_status: Signal<String>,
     // TODO: restore once dioxus desktop supports iframe navigation to external URLs
     // see: https://github.com/DioxusLabs/dioxus/issues/3086
     // blocked by hardcoded with_navigation_handler in dioxus-desktop/src/webview.rs
@@ -325,6 +359,8 @@ fn App() -> Element {
         copy_feedback: use_signal(|| None),
         show_hidden: use_signal(|| false),
         confirm_delete: use_signal(|| None),
+        scanner_connected: use_signal(|| false),
+        scanner_status: use_signal(|| "USB scanner: starting…".to_string()),
     };
     use_context_provider(|| state);
 
@@ -332,6 +368,8 @@ fn App() -> Element {
     use_hook(move || {
         let (tx, rx) = mpsc::unbounded_channel::<IrohEvent>();
         rx_holder.with_mut(|r| *r = Some(rx));
+        #[cfg(target_os = "linux")]
+        tokio::spawn(run_usb_scanner(tx.clone()));
         tokio::spawn(async move {
             if let Err(e) = run_iroh(tx).await {
                 tracing::error!("iroh error: {e:#}");
@@ -355,6 +393,10 @@ fn App() -> Element {
                 } => {
                     state.ticket_small.set((small_str, small_svg));
                     state.ticket_full.set((full_str, full_svg));
+                }
+                IrohEvent::ScannerStatus { connected, msg } => {
+                    state.scanner_connected.set(connected);
+                    state.scanner_status.set(msg);
                 }
                 IrohEvent::Scan(entry) => {
                     sync_state_set(&entry.code, false);
@@ -465,6 +507,17 @@ fn Header() -> Element {
         div { class: "header",
             h1 { "Barcode Receiver" }
             div { style: "display:flex;align-items:center;gap:10px;",
+                {
+                    let connected = (state.scanner_connected)();
+                    let status = state.scanner_status.read().clone();
+                    let color = if connected { "#4ade80" } else { "#ffa040" };
+                    let dot = if connected { "\u{25cf}" } else { "\u{25cb}" };
+                    rsx! {
+                        span { style: "font-size:11px;color:{color};", title: "{status}",
+                            "{dot} {status}"
+                        }
+                    }
+                }
                 span { style: "font-size:11px;color:#555;",
                     "{total} scan(s)"
                     if hidden > 0 { " / {hidden} hidden" }
@@ -1145,26 +1198,11 @@ async fn run_iroh(tx: mpsc::UnboundedSender<IrohEvent>) -> anyhow::Result<()> {
                             .await
                         {
                             Ok(result) => {
-                                let image_b64 = if result.image_jpeg.is_empty() {
-                                    String::new()
-                                } else {
-                                    BASE64.encode(&result.image_jpeg)
-                                };
-                                let detected_shops = detect_shops(&result.code);
-                                let display_code = format_display_code(&result.code);
-                                let entry = ScanEntry {
-                                    kind: result.kind.as_str().to_string(),
-                                    code: result.code.clone(),
-                                    extracted_card: result.extracted_card.clone(),
-                                    image_b64,
-                                    timestamp: format_timestamp(),
-                                    detected_shops,
-                                    hidden: false,
-                                    display_code,
-                                    manual_count: String::new(),
-                                    sort_count: String::new(),
-                                    card_value: String::new(),
-                                };
+                                let entry = build_scan_entry(
+                                    result.kind,
+                                    result.code.clone(),
+                                    &result.image_jpeg,
+                                );
                                 sync_all_push(&result.code, result.kind as u8);
                                 let log_display =
                                     entry.extracted_card.as_ref().unwrap_or(&entry.code);
@@ -1197,4 +1235,163 @@ fn format_timestamp() -> String {
     let m = (secs % 3600) / 60;
     let s = secs % 60;
     format!("{h:02}:{m:02}:{s:02}")
+}
+
+// ── USB barcode scanner (Linux/evdev) ────────────────────────────────
+//
+// A USB barcode scanner in keyboard-wedge (HID) mode "types" the scanned
+// code followed by Enter. We read its evdev device directly and exclusively
+// grab() it, so the digits don't also leak into whatever window is focused.
+// Decoded scans are fed into the same `IrohEvent::Scan` channel the phone uses.
+
+#[cfg(target_os = "linux")]
+async fn run_usb_scanner(tx: mpsc::UnboundedSender<IrohEvent>) {
+    use evdev::{Device, EventSummary, KeyCode};
+
+    let status = |connected: bool, msg: String| {
+        let _ = tx.send(IrohEvent::ScannerStatus { connected, msg });
+    };
+
+    // Locate the scanner: explicit override, else first device whose name
+    // looks like a barcode scanner.
+    let (path, mut device) = match std::env::var("BARCODE_SCANNER_DEVICE") {
+        Ok(path) => match Device::open(&path) {
+            Ok(d) => (path.into(), d),
+            Err(e) => {
+                tracing::warn!("USB scanner: cannot open {path}: {e}");
+                status(false, format!("USB scanner: cannot open {path} ({e})"));
+                return;
+            }
+        },
+        Err(_) => {
+            let found = evdev::enumerate().find(|(_, d)| {
+                d.name().is_some_and(|n| {
+                    let n = n.to_lowercase();
+                    n.contains("scanner") || n.contains("honeywell")
+                })
+            });
+            match found {
+                Some((path, d)) => {
+                    info!("USB scanner: using {} ({:?})", d.name().unwrap_or("?"), path);
+                    (path, d)
+                }
+                None => {
+                    info!("USB scanner: no scanner device found, USB input disabled");
+                    status(false, "USB scanner: not found".to_string());
+                    return;
+                }
+            }
+        }
+    };
+    let dev_name = device.name().unwrap_or("scanner").to_string();
+
+    // Exclusive access so scanned keystrokes don't reach other windows.
+    if let Err(e) = device.grab() {
+        tracing::warn!(
+            "USB scanner: failed to grab device ({e}); scans may leak into focused windows"
+        );
+    }
+
+    let mut stream = match device.into_event_stream() {
+        Ok(s) => s,
+        Err(e) => {
+            let perm = e.kind() == std::io::ErrorKind::PermissionDenied;
+            tracing::warn!(
+                "USB scanner: cannot read {path:?} ({e}). \
+                 Install receiver/99-barcode-scanner.rules and replug the scanner."
+            );
+            let msg = if perm {
+                "USB scanner: permission denied (install udev rule + replug)".to_string()
+            } else {
+                format!("USB scanner: read error ({e})")
+            };
+            status(false, msg);
+            return;
+        }
+    };
+    info!("USB scanner: connected to {dev_name}");
+    status(true, format!("USB scanner: connected ({dev_name})"));
+
+    let mut buf = String::new();
+    let mut shift = false;
+    loop {
+        let event = match stream.next_event().await {
+            Ok(ev) => ev,
+            Err(e) => {
+                tracing::warn!("USB scanner: read error ({e}); stopping");
+                status(false, format!("USB scanner: disconnected ({e})"));
+                return;
+            }
+        };
+
+        let EventSummary::Key(_, key, value) = event.destructure() else {
+            continue;
+        };
+
+        // Track shift across press(1)/release(0); ignore auto-repeat(2) below.
+        if matches!(key, KeyCode::KEY_LEFTSHIFT | KeyCode::KEY_RIGHTSHIFT) {
+            shift = value != 0;
+            continue;
+        }
+
+        // Only act on key-down; skip release and auto-repeat.
+        if value != 1 {
+            continue;
+        }
+
+        if matches!(key, KeyCode::KEY_ENTER | KeyCode::KEY_KPENTER) {
+            let code = std::mem::take(&mut buf);
+            if code.is_empty() {
+                continue;
+            }
+            let entry = build_scan_entry(barcode_proto::CodeKind::Barcode, code, &[]);
+            sync_all_push(&entry.code, barcode_proto::CodeKind::Barcode as u8);
+            let log_display = entry.extracted_card.as_ref().unwrap_or(&entry.code);
+            info!("USB scan: {} (extracted: {})", entry.code, log_display);
+            if tx.send(IrohEvent::Scan(entry)).is_err() {
+                return; // UI gone
+            }
+        } else if let Some(c) = keycode_to_char(key, shift) {
+            buf.push(c);
+        }
+    }
+}
+
+/// Map an evdev key to the character a US-layout keyboard wedge would emit.
+/// Covers digits (number row + keypad), letters, and a few common symbols —
+/// enough for numeric gift-card barcodes and basic alphanumeric codes.
+#[cfg(target_os = "linux")]
+fn keycode_to_char(key: evdev::KeyCode, shift: bool) -> Option<char> {
+    use evdev::KeyCode as K;
+
+    const DIGITS: &[(evdev::KeyCode, char)] = &[
+        (K::KEY_0, '0'), (K::KEY_1, '1'), (K::KEY_2, '2'), (K::KEY_3, '3'),
+        (K::KEY_4, '4'), (K::KEY_5, '5'), (K::KEY_6, '6'), (K::KEY_7, '7'),
+        (K::KEY_8, '8'), (K::KEY_9, '9'),
+        (K::KEY_KP0, '0'), (K::KEY_KP1, '1'), (K::KEY_KP2, '2'), (K::KEY_KP3, '3'),
+        (K::KEY_KP4, '4'), (K::KEY_KP5, '5'), (K::KEY_KP6, '6'), (K::KEY_KP7, '7'),
+        (K::KEY_KP8, '8'), (K::KEY_KP9, '9'),
+    ];
+    const LETTERS: &[(evdev::KeyCode, char)] = &[
+        (K::KEY_A, 'a'), (K::KEY_B, 'b'), (K::KEY_C, 'c'), (K::KEY_D, 'd'),
+        (K::KEY_E, 'e'), (K::KEY_F, 'f'), (K::KEY_G, 'g'), (K::KEY_H, 'h'),
+        (K::KEY_I, 'i'), (K::KEY_J, 'j'), (K::KEY_K, 'k'), (K::KEY_L, 'l'),
+        (K::KEY_M, 'm'), (K::KEY_N, 'n'), (K::KEY_O, 'o'), (K::KEY_P, 'p'),
+        (K::KEY_Q, 'q'), (K::KEY_R, 'r'), (K::KEY_S, 's'), (K::KEY_T, 't'),
+        (K::KEY_U, 'u'), (K::KEY_V, 'v'), (K::KEY_W, 'w'), (K::KEY_X, 'x'),
+        (K::KEY_Y, 'y'), (K::KEY_Z, 'z'),
+    ];
+
+    if let Some(&(_, c)) = DIGITS.iter().find(|&&(k, _)| k == key) {
+        return Some(c);
+    }
+    if let Some(&(_, c)) = LETTERS.iter().find(|&&(k, _)| k == key) {
+        return Some(if shift { c.to_ascii_uppercase() } else { c });
+    }
+    match key {
+        K::KEY_MINUS | K::KEY_KPMINUS => Some('-'),
+        K::KEY_SPACE => Some(' '),
+        K::KEY_DOT | K::KEY_KPDOT => Some('.'),
+        _ => None,
+    }
 }
