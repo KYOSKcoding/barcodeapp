@@ -46,6 +46,21 @@ You can also copy the APK to your phone via USB, a file sharing app, or by openi
 4. Each scan shows up on the desktop in real time. Use the shop buttons, copy, and browser features from there.
 5. Tap **Disconnect** on the phone to return to the start screen and re-pair.
 
+### USB barcode scanner (optional)
+
+The receiver can also read a USB barcode scanner plugged directly into the desktop, in addition to (or instead of) the phone. Any scanner in keyboard-wedge (HID) mode works — the receiver reads its input device directly via `evdev`, exclusively grabbing it so scans don't leak into other windows. A connection indicator in the header turns green (`USB scanner: connected`) once it's reading the device.
+
+By default Linux only lets `root` read input devices, so install the bundled udev rule once to grant access. The rule is scoped to the Honeywell `0c2e:0200` scanner and grants the `plugdev` group (which the desktop user is normally already in):
+
+```sh
+sudo cp receiver/99-barcode-scanner.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger --action=add --subsystem-match=input
+# or simply unplug/replug the scanner
+```
+
+Verify access (no replug needed): `test -r /dev/input/event* && echo ok`. If you have a different scanner, edit the `idVendor`/`idProduct` in the rule (find them with `lsusb` / `udevadm info`), or point the receiver at a specific device with `BARCODE_SCANNER_DEVICE=/dev/input/eventN`. Scans from the USB scanner appear in the same table as phone scans (without an image).
+
 ## Building
 
 ### Prerequisites
@@ -117,6 +132,8 @@ Dioxus 0.7 desktop app. On launch it creates an iroh endpoint with N0 preset and
 - **Opens browser balance-check pages** via "Open in Browser" buttons for each detected shop
 - **Shows scanned images** with rotation controls for codes that include a photo
 - **Hides/reveals processed entries** with per-row and header toggles
+
+A background task can also read a **USB barcode scanner** in keyboard-wedge mode directly via `evdev` (Linux), feeding its scans into the same table as the phone. See [USB barcode scanner](#usb-barcode-scanner-optional) for the one-time permission setup.
 
 ### Tech stack
 
